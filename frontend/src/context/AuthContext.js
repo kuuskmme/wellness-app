@@ -1,11 +1,13 @@
-// src/context/AuthContext.js - Authentication Context for JWT Management
+// frontend/src/context/AuthContext.js - Complete Updated File with Fixed Axios
 import React, { createContext, useState, useContext, useEffect, useCallback } from 'react';
 import axios from 'axios';
 
 const AuthContext = createContext({});
 
-// Configure axios defaults
-// temporarily commenting this line out. axios.defaults.baseURL = process.env.REACT_APP_API_URL || 'http://localhost:5000'; 
+// Configure axios defaults - FIXED FOR CORS
+axios.defaults.baseURL = 'http://localhost:5000';
+axios.defaults.headers.common['Content-Type'] = 'application/json';
+axios.defaults.withCredentials = true; // Important for CORS with credentials
 
 // Token refresh interval (14 minutes - just before 15 min expiry)
 const TOKEN_REFRESH_INTERVAL = 14 * 60 * 1000;
@@ -107,23 +109,37 @@ export const AuthProvider = ({ children }) => {
     return () => clearInterval(interval);
   }, [accessToken, refreshToken, refreshAccessToken]);
 
-  // Register function
+  // Register function - UPDATED
   const register = async (email, password, dataConsent = true) => {
     try {
       setError(null);
+      console.log('Registering user:', email);
+      
       const response = await axios.post('/api/auth/register', {
         email,
         password,
         dataConsent
       });
       
+      console.log('Registration response:', response.data);
+      
+      // Log verification info if available
+      if (response.data.verificationToken) {
+        console.log('\n📧 VERIFICATION INFO:');
+        console.log('Token:', response.data.verificationToken);
+        console.log('URL:', response.data.verificationUrl);
+      }
+      
       return {
         success: true,
         message: response.data.message,
         userId: response.data.userId,
-        emailSent: response.data.emailSent
+        emailSent: response.data.emailSent,
+        verificationToken: response.data.verificationToken,
+        verificationUrl: response.data.verificationUrl
       };
     } catch (error) {
+      console.error('Registration error:', error);
       const message = error.response?.data?.message || 'Registration failed';
       setError(message);
       return {
@@ -134,27 +150,23 @@ export const AuthProvider = ({ children }) => {
     }
   };
 
-  // Login function
+  // Login function - UPDATED
   const login = async (email, password, twoFactorCode = null) => {
     try {
       setError(null);
+      console.log('Logging in user:', email);
 
-        // Build request body - only include twoFactorCode if it exists
-    const requestBody = {
-      email,
-      password
-    };
-    
-    // Only add twoFactorCode if it's provided and not empty
-    if (twoFactorCode && twoFactorCode.length === 6) {
-      requestBody.twoFactorCode = twoFactorCode;
-    }
-
-      const response = await axios.post('/api/auth/login', {
+      const requestBody = {
         email,
-        password,
-        twoFactorCode
-      });
+        password
+      };
+      
+      // Only add twoFactorCode if provided
+      if (twoFactorCode && twoFactorCode.length === 6) {
+        requestBody.twoFactorCode = twoFactorCode;
+      }
+
+      const response = await axios.post('/api/auth/login', requestBody);
 
       // Check if 2FA is required
       if (response.data.requires2FA) {
@@ -178,12 +190,15 @@ export const AuthProvider = ({ children }) => {
       
       axios.defaults.headers.common['Authorization'] = `Bearer ${tokens.accessToken}`;
       
+      console.log('Login successful!');
+      
       return {
         success: true,
         message: response.data.message,
         user
       };
     } catch (error) {
+      console.error('Login error:', error);
       const message = error.response?.data?.message || 'Login failed';
       setError(message);
       return {
@@ -216,14 +231,20 @@ export const AuthProvider = ({ children }) => {
       localStorage.removeItem('refreshToken');
       
       delete axios.defaults.headers.common['Authorization'];
+      
+      console.log('Logged out successfully');
     }
   };
 
-  // Verify email
+  // Verify email - UPDATED
   const verifyEmail = async (token) => {
     try {
       setError(null);
+      console.log('Verifying email with token:', token);
+      
       const response = await axios.get(`/api/auth/verify/${token}`);
+      
+      console.log('Verification response:', response.data);
       
       // Auto-login after verification
       const { tokens, user } = response.data;
@@ -245,6 +266,7 @@ export const AuthProvider = ({ children }) => {
         message: response.data.message
       };
     } catch (error) {
+      console.error('Verification error:', error);
       const message = error.response?.data?.message || 'Verification failed';
       setError(message);
       return {

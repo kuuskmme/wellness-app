@@ -1,34 +1,5 @@
-// utils/email.js - Email Service for Verification and Password Reset
+// backend/utils/email.js - Complete Updated File with Console Fallback
 const nodemailer = require('nodemailer');
-
-// Create reusable transporter
-const createTransport = () => {
-  // For development, you can use Ethereal Email (fake SMTP service)
-  // For production, use real SMTP settings
-  
-  if (process.env.NODE_ENV === 'development' && !process.env.EMAIL_HOST) {
-    // Use Ethereal for development if no email config
-    return nodemailer.createTransport({
-      host: 'smtp.ethereal.email',
-      port: 587,
-      auth: {
-        user: 'ethereal.user@ethereal.email',
-        pass: 'ethereal.pass'
-      }
-    });
-  }
-  
-  // Use configured SMTP settings
-  return nodemailer.createTransport({
-    host: process.env.EMAIL_HOST,
-    port: process.env.EMAIL_PORT || 587,
-    secure: process.env.EMAIL_PORT === '465', // true for 465, false for other ports
-    auth: {
-      user: process.env.EMAIL_USER,
-      pass: process.env.EMAIL_PASS
-    }
-  });
-};
 
 // Email templates
 const emailTemplates = {
@@ -88,7 +59,7 @@ const emailTemplates = {
         </div>
         <div style="padding: 20px; background-color: #f3f4f6;">
           <h2>Hi ${name || 'there'},</h2>
-          <p>We received a request to reset your password for your Wellness Platform account.</p>
+          <p>We received a request to reset your password.</p>
           <p>Click the button below to reset your password:</p>
           <div style="text-align: center; margin: 30px 0;">
             <a href="${resetUrl}" 
@@ -104,25 +75,18 @@ const emailTemplates = {
           <p><strong>This link will expire in 1 hour.</strong></p>
           <p style="color: #ef4444;"><strong>⚠️ Important:</strong> If you didn't request this password reset, 
              please ignore this email and your password will remain unchanged.</p>
-          <hr style="margin: 30px 0; border: none; border-top: 1px solid #ddd;">
-          <p style="color: #666; font-size: 14px;">
-            Best regards,<br>
-            The Wellness Platform Team
-          </p>
         </div>
       </div>
     `,
     text: `
       Password Reset Request
       
-      We received a request to reset your password.
-      
       Reset your password by visiting:
       ${resetUrl}
       
       This link will expire in 1 hour.
       
-      If you didn't request this password reset, please ignore this email.
+      If you didn't request this, please ignore this email.
       
       Best regards,
       The Wellness Platform Team
@@ -141,70 +105,69 @@ const emailTemplates = {
           <p>Your email has been verified and your account is now active!</p>
           <h3>Here's how to get started:</h3>
           <ol style="line-height: 2;">
-            <li><strong>Complete Your Health Profile</strong> - Tell us about your health metrics and goals</li>
-            <li><strong>Set Your Fitness Goals</strong> - Whether it's weight loss, muscle gain, or general fitness</li>
-            <li><strong>Track Your Progress</strong> - Monitor your BMI, wellness score, and achievements</li>
-            <li><strong>Get AI Insights</strong> - Receive personalized recommendations based on your data</li>
+            <li><strong>Complete Your Health Profile</strong></li>
+            <li><strong>Set Your Fitness Goals</strong></li>
+            <li><strong>Track Your Progress</strong></li>
+            <li><strong>Get AI Insights</strong></li>
           </ol>
-          <div style="text-align: center; margin: 30px 0;">
-            <a href="${process.env.FRONTEND_URL}/profile" 
-               style="background-color: #10b981; color: white; padding: 12px 30px; 
-                      text-decoration: none; border-radius: 5px; display: inline-block;">
-              Complete Your Profile
-            </a>
-          </div>
           <p>Remember: <strong>Numbers Don't Lie!</strong> 💪</p>
-          <hr style="margin: 30px 0; border: none; border-top: 1px solid #ddd;">
-          <p style="color: #666; font-size: 14px;">
-            Need help? Reply to this email or visit our support page.<br><br>
-            Best regards,<br>
-            The Wellness Platform Team
-          </p>
         </div>
       </div>
     `,
-    text: `
-      Welcome to Wellness Platform!
-      
-      Your email has been verified and your account is now active!
-      
-      Get started by completing your health profile at:
-      ${process.env.FRONTEND_URL}/profile
-      
-      Best regards,
-      The Wellness Platform Team
-    `
-  }),
-
-  twoFactorCode: (code) => ({
-    subject: 'Your 2FA Code - Wellness Platform',
-    html: `
-      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-        <div style="background-color: #3b82f6; color: white; padding: 20px; text-align: center;">
-          <h1 style="margin: 0;">Two-Factor Authentication</h1>
-        </div>
-        <div style="padding: 20px; background-color: #f3f4f6;">
-          <p>Your verification code is:</p>
-          <div style="text-align: center; margin: 30px 0;">
-            <h1 style="background-color: white; padding: 20px; border-radius: 5px; 
-                       letter-spacing: 5px; font-size: 36px;">
-              ${code}
-            </h1>
-          </div>
-          <p><strong>This code will expire in 5 minutes.</strong></p>
-          <p style="color: #ef4444;">Never share this code with anyone.</p>
-        </div>
-      </div>
-    `,
-    text: `Your 2FA code is: ${code}. This code will expire in 5 minutes.`
+    text: `Welcome to Wellness Platform! Your account is now active!`
   })
 };
 
-// Send email function
+// Create transporter (with fallback for development)
+const createTransporter = () => {
+  // If no email config, return null (we'll use console logging instead)
+  if (!process.env.EMAIL_HOST) {
+    return null;
+  }
+  
+  return nodemailer.createTransporter({
+    host: process.env.EMAIL_HOST,
+    port: process.env.EMAIL_PORT || 587,
+    secure: process.env.EMAIL_PORT === '465',
+    auth: {
+      user: process.env.EMAIL_USER,
+      pass: process.env.EMAIL_PASS
+    }
+  });
+};
+
+// Send email function with console fallback
 const sendEmail = async (to, template, data) => {
   try {
-    const transporter = createTransport();
     const emailContent = emailTemplates[template](...data);
+    
+    // Always log in development
+    if (process.env.NODE_ENV === 'development' || !process.env.EMAIL_HOST) {
+      console.log('\n' + '='.repeat(60));
+      console.log('📧 EMAIL (Development Mode - Not Actually Sent)');
+      console.log('='.repeat(60));
+      console.log('To:', to);
+      console.log('Subject:', emailContent.subject);
+      console.log('Template:', template);
+      
+      // Log important info based on template
+      if (template === 'verification' && data[1]) {
+        console.log('VERIFICATION LINK:', data[1]);
+      } else if (template === 'passwordReset' && data[1]) {
+        console.log('RESET LINK:', data[1]);
+      }
+      
+      console.log('='.repeat(60) + '\n');
+      
+      return { success: true, messageId: 'dev-mode-' + Date.now() };
+    }
+    
+    // Try to send real email if configured
+    const transporter = createTransporter();
+    if (!transporter) {
+      console.log('📧 Email service not configured - logged to console instead');
+      return { success: true, messageId: 'no-email-service' };
+    }
     
     const mailOptions = {
       from: `"Wellness Platform" <${process.env.EMAIL_USER || 'noreply@wellness.com'}>`,
@@ -215,27 +178,23 @@ const sendEmail = async (to, template, data) => {
     };
 
     const info = await transporter.sendMail(mailOptions);
-    
-    // Log Ethereal URL in development
-    if (process.env.NODE_ENV === 'development' && !process.env.EMAIL_HOST) {
-      console.log('Preview URL: %s', nodemailer.getTestMessageUrl(info));
-    }
-    
     return { success: true, messageId: info.messageId };
+    
   } catch (error) {
     console.error('Email sending error:', error);
+    // Don't throw - just return failure
     return { success: false, error: error.message };
   }
 };
 
 // Specific email sending functions
 const sendVerificationEmail = async (email, name, token) => {
-  const verificationUrl = `${process.env.FRONTEND_URL}/verify-email?token=${token}`;
+  const verificationUrl = `${process.env.FRONTEND_URL || 'http://localhost:3000'}/verify-email/${token}`;
   return sendEmail(email, 'verification', [name, verificationUrl]);
 };
 
 const sendPasswordResetEmail = async (email, name, token) => {
-  const resetUrl = `${process.env.FRONTEND_URL}/reset-password?token=${token}`;
+  const resetUrl = `${process.env.FRONTEND_URL || 'http://localhost:3000'}/reset-password?token=${token}`;
   return sendEmail(email, 'passwordReset', [name, resetUrl]);
 };
 
@@ -243,14 +202,9 @@ const sendWelcomeEmail = async (email, name) => {
   return sendEmail(email, 'welcome', [name]);
 };
 
-const send2FACodeEmail = async (email, code) => {
-  return sendEmail(email, 'twoFactorCode', [code]);
-};
-
 module.exports = {
   sendVerificationEmail,
   sendPasswordResetEmail,
   sendWelcomeEmail,
-  send2FACodeEmail,
   sendEmail
 };
