@@ -1,200 +1,147 @@
-// middleware/auth.js - JWT Authentication Middleware
+// middleware/auth.js - Complete authentication middleware for Step 3
 const jwt = require('jsonwebtoken');
 const User = require('../models/User');
+const rateLimit = require('express-rate-limit');
 
-// Verify JWT token middleware
-const verifyToken = async (req, res, next) => {
+// Verify JWT token
+const verifyToken = (req, res, next) => {
+  const token = req.headers.authorization?.split(' ')[1];
+  
+  if (!token) {
+    return res.status(401).json({ message: 'Access token required' });
+  }
+
   try {
-    // Get token from header
-    const authHeader = req.header('Authorization');
-    
-    if (!authHeader || !authHeader.startsWith('Bearer ')) {
-      return res.status(401).json({ 
-        message: 'Access denied. No valid token provided.' 
-      });
-    }
-
-    // Extract token (remove 'Bearer ' prefix)
-    const token = authHeader.substring(7);
-
-    // Verify token
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    
-    // Check if user still exists
-    const user = await User.findById(decoded.userId).select('-password');
-    
-    if (!user) {
-      return res.status(401).json({ 
-        message: 'User no longer exists.' 
-      });
-    }
-
-    // Check if user is verified
-    if (!user.isVerified) {
-      return res.status(403).json({ 
-        message: 'Please verify your email to access this resource.' 
-      });
-    }
-
-    // Attach user to request object
-    req.user = user;
-    req.userId = user._id;
-    
+    req.userId = decoded.userId;
     next();
   } catch (error) {
     if (error.name === 'TokenExpiredError') {
-      return res.status(401).json({ 
-        message: 'Token expired. Please refresh your token.',
-        code: 'TOKEN_EXPIRED'
-      });
+      return res.status(401).json({ message: 'Token expired', code: 'TOKEN_EXPIRED' });
     }
-    
-    if (error.name === 'JsonWebTokenError') {
-      return res.status(401).json({ 
-        message: 'Invalid token.' 
-      });
-    }
-    
-    console.error('Auth middleware error:', error);
-    res.status(500).json({ 
-      message: 'Server error during authentication.' 
-    });
+    return res.status(401).json({ message: 'Invalid token' });
   }
 };
 
 // Verify refresh token
-const verifyRefreshToken = async (req, res, next) => {
+const verifyRefreshToken = (token) => {
   try {
-    const { refreshToken } = req.body;
-    
-    if (!refreshToken) {
-      return res.status(401).json({ 
-        message: 'Refresh token required.' 
-      });
-    }
+    return jwt.verify(token, process.env.JWT_REFRESH_SECRET);
+  } catch (error) {
+    return null;
+  }
+};
 
-    // Verify refresh token
-    const decoded = jwt.verify(refreshToken, process.env.JWT_REFRESH_SECRET);
-    
-    // Find user and check if refresh token exists in their tokens
-    const user = await User.findById(decoded.userId);
+// Check if user has given data consent (NEW for Step 3)
+const requireDataConsent = async (req, res, next) => {
+  try {
+    const user = await User.findById(req.userId).select('dataConsent');
     
     if (!user) {
-      return res.status(401).json({ 
-        message: 'Invalid refresh token.' 
-      });
+      return res.status(404).json({ message: 'User not found' });
     }
 
-    // Clean expired tokens
-    user.cleanExpiredTokens();
-    
-    // Check if this refresh token is in the user's valid tokens
-    const tokenExists = user.refreshTokens.some(
-      tokenObj => tokenObj.token === refreshToken
-    );
-    
-    if (!tokenExists) {
-      return res.status(401).json({ 
-        message: 'Refresh token not found or expired.' 
-      });
-    }
-
-    req.user = user;
-    req.refreshToken = refreshToken;
-    
-    next();
-  } catch (error) {
-    if (error.name === 'TokenExpiredError') {
-      return res.status(401).json({ 
-        message: 'Refresh token expired. Please login again.' 
-      });
-    }
-    
-    console.error('Refresh token error:', error);
-    res.status(401).json({ 
-      message: 'Invalid refresh token.' 
-    });
-  }
-};
-
-// Optional auth - doesn't fail if no token, but attaches user if valid token
-const optionalAuth = async (req, res, next) => {
-  try {
-    const authHeader = req.header('Authorization');
-    
-    if (!authHeader || !authHeader.startsWith('Bearer ')) {
-      return next(); // Continue without user
-    }
-
-    const token = authHeader.substring(7);
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    
-    const user = await User.findById(decoded.userId).select('-password');
-    
-    if (user && user.isVerified) {
-      req.user = user;
-      req.userId = user._id;
-    }
-    
-    next();
-  } catch (error) {
-    // Continue without user even if token is invalid
-    next();
-  }
-};
-
-// Check if user has specific role (for future use)
-const hasRole = (requiredRole) => {
-  return (req, res, next) => {
-    if (!req.user) {
-      return res.status(401).json({ 
-        message: 'Authentication required.' 
-      });
-    }
-
-    if (req.user.role !== requiredRole) {
+    if (!user.dataConsent || !user.dataConsent.given) {
       return res.status(403).json({ 
-        message: 'Insufficient permissions.' 
+        message: 'Data consent required',
+        code: 'CONSENT_REQUIRED',
+        redirectTo: '/profile#privacy'
       });
     }
 
     next();
-  };
+  } catch (error) {
+    console.error('Consent check error:', error);
+    res.status(500).json({ message: 'Server error while checking consent' });
+  }
 };
 
-// Rate limiting middleware for auth endpoints
-const authRateLimit = require('express-rate-limit');
+// Check if email is verified
+const requireVerification = async (req, res, next) => {
+  try {
+    const user = await User.findById(req.userId).select('isVerified');
+    
+    if (!user) {
+      return res.status(404).json({ message: 'User not found' });
+    }
 
-const createAccountLimiter = authRateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 5, // max 5 requests per windowMs
-  message: 'Too many accounts created from this IP, please try again later.',
-  standardHeaders: true,
-  legacyHeaders: false,
-});
+    if (!user.isVerified) {
+      return res.status(403).json({ 
+        message: 'Email verification required',
+        code: 'VERIFICATION_REQUIRED',
+        redirectTo: '/verify-pending'
+      });
+    }
 
-const loginLimiter = authRateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 10, // max 10 login attempts per windowMs
-  message: 'Too many login attempts from this IP, please try again later.',
-  standardHeaders: true,
-  legacyHeaders: false,
-  skipSuccessfulRequests: true, // Don't count successful requests
-});
+    next();
+  } catch (error) {
+    console.error('Verification check error:', error);
+    res.status(500).json({ message: 'Server error while checking verification' });
+  }
+};
 
-const passwordResetLimiter = authRateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 3, // max 3 password reset requests per windowMs
-  message: 'Too many password reset requests, please try again later.',
-  standardHeaders: true,
-  legacyHeaders: false,
-});
+// Rate limiting middleware
+const createRateLimiter = (windowMs, max, message) => {
+  return rateLimit({
+    windowMs,
+    max,
+    message,
+    standardHeaders: true,
+    legacyHeaders: false,
+    handler: (req, res) => {
+      res.status(429).json({
+        message,
+        retryAfter: Math.ceil(windowMs / 1000)
+      });
+    }
+  });
+};
+
+// Different rate limiters for different endpoints
+const authLimiter = createRateLimiter(
+  15 * 60 * 1000, // 15 minutes
+  5, // 5 requests per window
+  'Too many authentication attempts, please try again later'
+);
+
+const apiLimiter = createRateLimiter(
+  1 * 60 * 1000, // 1 minute
+  100, // 100 requests per minute
+  'Too many requests, please slow down'
+);
+
+const exportLimiter = createRateLimiter(
+  60 * 60 * 1000, // 1 hour
+  10, // 10 exports per hour
+  'Export limit reached, please try again later'
+);
+
+const createAccountLimiter = createRateLimiter(
+  60 * 60 * 1000, // 1 hour
+  3, // 3 accounts per hour per IP
+  'Too many accounts created from this IP, please try again later'
+);
+
+const loginLimiter = createRateLimiter(
+  15 * 60 * 1000, // 15 minutes
+  5, // 5 login attempts per window
+  'Too many login attempts, please try again later'
+);
+
+const passwordResetLimiter = createRateLimiter(
+  60 * 60 * 1000, // 1 hour
+  3, // 3 reset requests per hour
+  'Too many password reset requests, please try again later'
+);
 
 module.exports = {
   verifyToken,
   verifyRefreshToken,
-  optionalAuth,
-  hasRole,
+  requireDataConsent,
+  requireVerification,
+  authLimiter,
+  apiLimiter,
+  exportLimiter,
   createAccountLimiter,
   loginLimiter,
   passwordResetLimiter

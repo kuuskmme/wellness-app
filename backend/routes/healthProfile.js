@@ -1,19 +1,22 @@
-// routes/healthProfile.js - Health profile routes with JWT authentication
+// routes/healthProfile.js - Complete health profile routes with all Step 3 requirements
 const express = require('express');
 const router = express.Router();
 const { body, validationResult } = require('express-validator');
 const HealthProfile = require('../models/HealthProfile');
-const { verifyToken } = require('../middleware/auth');
+const { verifyToken, requireDataConsent, apiLimiter, exportLimiter } = require('../middleware/auth');
+
+// Apply rate limiting to all health profile routes
+router.use(apiLimiter);
 
 // All health profile routes require authentication
 router.use(verifyToken);
 
-// Create or update health profile
-router.post('/', [
-  body('demographics.age').isInt({ min: 1, max: 150 }),
+// Create or update health profile (requires consent)
+router.post('/', requireDataConsent, [
+  body('demographics.age').isInt({ min: 1, max: 150 }).withMessage('Age must be between 1 and 150'),
   body('demographics.gender').isIn(['male', 'female', 'other', 'prefer_not_to_say']),
-  body('physicalMetrics.height.value').isFloat({ min: 30, max: 300 }),
-  body('physicalMetrics.weight.value').isFloat({ min: 1, max: 500 }),
+  body('physicalMetrics.height.value').isFloat({ min: 30, max: 300 }).withMessage('Height must be between 30 and 300'),
+  body('physicalMetrics.weight.value').isFloat({ min: 1, max: 500 }).withMessage('Weight must be between 1 and 500'),
   body('lifestyleIndicators.occupationType').isIn(['sedentary', 'light_activity', 'moderate_activity', 'heavy_activity']),
   body('lifestyleIndicators.activityLevel').isIn(['sedentary', 'lightly_active', 'moderately_active', 'very_active', 'extremely_active']),
   body('fitnessGoals.primary').isIn(['weight_loss', 'muscle_gain', 'endurance', 'flexibility', 'general_fitness', 'stress_reduction', 'health_maintenance']),
@@ -22,7 +25,12 @@ router.post('/', [
   try {
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
-      return res.status(400).json({ errors: errors.array() });
+      return res.status(400).json({ 
+        errors: errors.array().map(err => ({
+          path: err.path,
+          msg: err.msg
+        }))
+      });
     }
 
     // Check if profile exists
@@ -40,17 +48,32 @@ router.post('/', [
       });
     }
 
+    // The model's pre-save hook will handle:
+    // - Data normalization (converting to standard units)
+    // - BMI calculation
+    // - Profile completeness calculation
     await profile.save();
 
     res.json({
       message: profile.isNew ? 'Health profile created successfully' : 'Health profile updated successfully',
-      profile
+      profile,
+      bmi: profile.physicalMetrics.bmi,
+      completeness: profile.metadata.profileCompleteness
     });
   } catch (error) {
     console.error('Health profile error:', error);
+    
+    // Check for validation errors from mongoose
+    if (error.name === 'ValidationError') {
+      const errors = Object.keys(error.errors).map(key => ({
+        path: key,
+        msg: error.errors[key].message
+      }));
+      return res.status(400).json({ errors });
+    }
+    
     res.status(500).json({ 
-      message: 'Server error while saving health profile',
-      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+      message: 'Server error while saving health profile'
     });
   }
 });
@@ -66,7 +89,14 @@ router.get('/', async (req, res) => {
       });
     }
 
-    res.json({ profile });
+    res.json({ 
+      profile,
+      metadata: {
+        lastUpdated: profile.metadata.lastUpdated,
+        profileCompleteness: profile.metadata.profileCompleteness,
+        dataVersion: profile.metadata.dataVersion
+      }
+    });
   } catch (error) {
     console.error('Get profile error:', error);
     res.status(500).json({ 
@@ -76,7 +106,7 @@ router.get('/', async (req, res) => {
 });
 
 // Update specific section of health profile
-router.patch('/:section', async (req, res) => {
+router.patch('/:section', requireDataConsent, async (req, res) => {
   try {
     const { section } = req.params;
     const validSections = [
@@ -91,7 +121,8 @@ router.patch('/:section', async (req, res) => {
 
     if (!validSections.includes(section)) {
       return res.status(400).json({ 
-        message: 'Invalid profile section' 
+        message: 'Invalid profile section',
+        validSections 
       });
     }
 
@@ -104,14 +135,22 @@ router.patch('/:section', async (req, res) => {
     }
 
     // Update the specific section
-    profile[section] = { ...profile[section], ...req.body };
+    if (section === 'dietaryPreferences') {
+      // Special handling for array fields
+      profile[section] = req.body;
+    } else {
+      profile[section] = { ...profile[section].toObject(), ...req.body };
+    }
+    
     profile.metadata.lastUpdated = new Date();
     
     await profile.save();
 
     res.json({
       message: `${section} updated successfully`,
-      profile
+      profile,
+      bmi: profile.physicalMetrics.bmi,
+      completeness: profile.metadata.profileCompleteness
     });
   } catch (error) {
     console.error('Update section error:', error);
@@ -132,102 +171,103 @@ router.get('/wellness-score', async (req, res) => {
       });
     }
 
-    // Calculate wellness score components
+    // Calculate wellness score components (0-100 scale)
     const calculateBMIScore = (bmi) => {
       if (!bmi) return 0;
-      if (bmi >= 18.5 && bmi <= 24.9) return 100;
-      if ((bmi >= 17 && bmi < 18.5) || (bmi >= 25 && bmi <= 26.5)) return 80;
-      if ((bmi >= 16 && bmi < 17) || (bmi > 26.5 && bmi <= 28)) return 60;
-      if ((bmi >= 15 && bmi < 16) || (bmi > 28 && bmi <= 30)) return 40;
-      return 20;
+      if (bmi >= 18.5 && bmi <= 24.9) return 100; // Normal range
+      if ((bmi >= 17 && bmi < 18.5) || (bmi >= 25 && bmi <= 27)) return 75; // Slightly off
+      if ((bmi >= 16 && bmi < 17) || (bmi > 27 && bmi <= 30)) return 50; // Moderately off
+      if ((bmi >= 15 && bmi < 16) || (bmi > 30 && bmi <= 35)) return 25; // Significantly off
+      return 10; // Extremely off
     };
 
     const calculateActivityScore = (frequency, level) => {
-      const levelScores = {
+      const freqScore = Math.min((frequency / 7) * 100, 100);
+      const levelMap = {
         'sedentary': 0,
         'lightly_active': 25,
         'moderately_active': 50,
         'very_active': 75,
         'extremely_active': 100
       };
-      
-      const frequencyScore = (frequency / 7) * 100;
-      const levelScore = levelScores[level] || 0;
-      
-      return (frequencyScore * 0.5 + levelScore * 0.5);
+      const levelScore = levelMap[level] || 0;
+      return (freqScore * 0.6 + levelScore * 0.4); // 60% frequency, 40% intensity
     };
 
     const calculateHabitsScore = (sleep, stress, smoking, alcohol) => {
       let score = 0;
-      
+      let factors = 0;
+
       // Sleep score (7-9 hours is optimal)
-      if (sleep >= 7 && sleep <= 9) score += 25;
-      else if (sleep >= 6 && sleep < 7) score += 15;
-      else if (sleep > 9 && sleep <= 10) score += 15;
-      else score += 5;
-      
+      if (sleep) {
+        factors++;
+        if (sleep >= 7 && sleep <= 9) score += 100;
+        else if (sleep >= 6 && sleep < 7) score += 75;
+        else if (sleep >= 5 && sleep < 6) score += 50;
+        else score += 25;
+      }
+
       // Stress score (lower is better)
       if (stress) {
-        score += Math.max(0, 25 - (stress * 2.5));
-      } else {
-        score += 12.5; // Default if not provided
+        factors++;
+        score += Math.max(0, 100 - (stress * 10));
       }
-      
+
       // Smoking score
-      if (smoking === 'never') score += 25;
-      else if (smoking === 'former') score += 15;
-      else if (smoking === 'current') score += 0;
-      else score += 12.5; // Default
-      
+      if (smoking) {
+        factors++;
+        const smokingMap = { 'never': 100, 'former': 75, 'current': 0, 'prefer_not_to_say': 50 };
+        score += smokingMap[smoking] || 50;
+      }
+
       // Alcohol score
-      if (alcohol === 'none') score += 25;
-      else if (alcohol === 'occasional') score += 20;
-      else if (alcohol === 'moderate') score += 10;
-      else if (alcohol === 'heavy') score += 0;
-      else score += 12.5; // Default
-      
-      return score;
+      if (alcohol) {
+        factors++;
+        const alcoholMap = { 'none': 100, 'occasional': 75, 'moderate': 50, 'heavy': 0, 'prefer_not_to_say': 50 };
+        score += alcoholMap[alcohol] || 50;
+      }
+
+      return factors > 0 ? score / factors : 50;
     };
 
     const calculateProgressScore = (currentWeight, targetWeight, startWeight) => {
-      if (!targetWeight || !currentWeight) return 50; // Default if no target
+      if (!targetWeight || !currentWeight) return 50;
       
       const totalToLose = Math.abs(startWeight - targetWeight);
       const progressMade = Math.abs(startWeight - currentWeight);
       
       if (totalToLose === 0) return 100;
       
-      const percentProgress = (progressMade / totalToLose) * 100;
-      return Math.min(100, Math.max(0, percentProgress));
+      const progressPercent = (progressMade / totalToLose) * 100;
+      return Math.min(progressPercent, 100);
     };
 
-    // Calculate component scores
-    const bmiScore = calculateBMIScore(profile.physicalMetrics.bmi?.value);
-    const activityScore = calculateActivityScore(
-      profile.initialFitnessAssessment?.weeklyActivityFrequency || 0,
-      profile.lifestyleIndicators?.activityLevel
-    );
-    const habitsScore = calculateHabitsScore(
-      profile.lifestyleIndicators?.sleepHours,
-      profile.lifestyleIndicators?.stressLevel,
-      profile.lifestyleIndicators?.smokingStatus,
-      profile.lifestyleIndicators?.alcoholConsumption
-    );
-    const progressScore = calculateProgressScore(
-      profile.physicalMetrics?.weight?.normalizedValue,
-      profile.fitnessGoals?.targetWeight?.normalizedValue,
-      profile.physicalMetrics?.weight?.normalizedValue // Using current as start for now
-    );
+    // Get the actual values from profile
+    const bmi = profile.physicalMetrics.bmi?.value;
+    const weeklyActivity = profile.initialFitnessAssessment?.weeklyActivityFrequency || 0;
+    const activityLevel = profile.lifestyleIndicators?.activityLevel;
+    const sleepHours = profile.lifestyleIndicators?.sleepHours;
+    const stressLevel = profile.lifestyleIndicators?.stressLevel;
+    const smokingStatus = profile.lifestyleIndicators?.smokingStatus;
+    const alcoholConsumption = profile.lifestyleIndicators?.alcoholConsumption;
+    const currentWeight = profile.physicalMetrics.weight?.normalizedValue;
+    const targetWeight = profile.fitnessGoals?.targetWeight?.normalizedValue;
 
-    // Calculate overall wellness score
+    // Calculate individual scores
+    const bmiScore = calculateBMIScore(bmi);
+    const activityScore = calculateActivityScore(weeklyActivity, activityLevel);
+    const habitsScore = calculateHabitsScore(sleepHours, stressLevel, smokingStatus, alcoholConsumption);
+    const progressScore = calculateProgressScore(currentWeight, targetWeight, currentWeight);
+
+    // Calculate overall wellness score (weighted average)
     const overallScore = Math.round(
-      (bmiScore * 0.3) + 
-      (activityScore * 0.3) + 
-      (progressScore * 0.2) + 
-      (habitsScore * 0.2)
+      (bmiScore * 0.3) +      // 30% weight
+      (activityScore * 0.3) +  // 30% weight
+      (progressScore * 0.2) +  // 20% weight
+      (habitsScore * 0.2)      // 20% weight
     );
 
-    // Update profile with new scores
+    // Update profile with calculated scores
     profile.wellnessScore = {
       overall: overallScore,
       components: {
@@ -241,13 +281,32 @@ router.get('/wellness-score', async (req, res) => {
 
     await profile.save();
 
+    // Generate recommendations based on scores
+    const recommendations = {
+      bmi: bmiScore < 75 ? 
+        'Focus on achieving a healthy BMI through balanced diet and exercise' : 
+        'Great BMI! Maintain your current weight',
+      activity: activityScore < 60 ? 
+        'Try to increase your weekly activity frequency and intensity' : 
+        'Excellent activity level! Keep it up',
+      habits: habitsScore < 60 ? 
+        'Consider improving sleep quality, reducing stress, and maintaining healthy habits' : 
+        'Good lifestyle habits!',
+      progress: progressScore < 50 ? 
+        'Stay consistent with your goals - every small step counts!' : 
+        'Great progress towards your goals!'
+    };
+
     res.json({
       wellnessScore: profile.wellnessScore,
-      recommendations: {
-        bmi: bmiScore < 60 ? 'Focus on achieving a healthy BMI through balanced diet and exercise' : 'Great BMI! Maintain your current weight',
-        activity: activityScore < 60 ? 'Try to increase your weekly activity frequency' : 'Excellent activity level!',
-        habits: habitsScore < 60 ? 'Consider improving sleep quality and reducing stress' : 'Good lifestyle habits!',
-        progress: progressScore < 50 ? 'Stay consistent with your goals' : 'Great progress towards your goals!'
+      recommendations,
+      analysis: {
+        strengths: Object.entries(profile.wellnessScore.components)
+          .filter(([_, score]) => score >= 75)
+          .map(([component]) => component),
+        areasForImprovement: Object.entries(profile.wellnessScore.components)
+          .filter(([_, score]) => score < 60)
+          .map(([component]) => component)
       }
     });
   } catch (error) {
@@ -258,11 +317,11 @@ router.get('/wellness-score', async (req, res) => {
   }
 });
 
-// Export health data
-router.get('/export', async (req, res) => {
+// Export health data (with rate limiting)
+router.get('/export', exportLimiter, async (req, res) => {
   try {
     const profile = await HealthProfile.findOne({ userId: req.userId })
-      .populate('userId', 'email createdAt');
+      .populate('userId', 'email createdAt dataConsent dataSharing');
     
     if (!profile) {
       return res.status(404).json({ 
@@ -270,23 +329,49 @@ router.get('/export', async (req, res) => {
       });
     }
 
+    // Prepare export data with all historical metrics and timestamps
+    const exportData = {
+      exportDate: new Date().toISOString(),
+      user: {
+        email: profile.userId.email,
+        accountCreated: profile.userId.createdAt,
+        dataConsent: profile.userId.dataConsent,
+        dataSharing: profile.userId.dataSharing
+      },
+      profile: {
+        demographics: profile.demographics,
+        physicalMetrics: {
+          ...profile.physicalMetrics.toObject(),
+          bmi: profile.physicalMetrics.bmi,
+          normalizedHeight: profile.physicalMetrics.height.normalizedValue,
+          normalizedWeight: profile.physicalMetrics.weight.normalizedValue
+        },
+        lifestyleIndicators: profile.lifestyleIndicators,
+        dietaryPreferences: profile.dietaryPreferences,
+        dietaryRestrictions: profile.dietaryRestrictions,
+        fitnessGoals: {
+          ...profile.fitnessGoals.toObject(),
+          normalizedTargetWeight: profile.fitnessGoals.targetWeight?.normalizedValue
+        },
+        initialFitnessAssessment: profile.initialFitnessAssessment,
+        wellnessScore: profile.wellnessScore
+      },
+      metadata: {
+        version: '3.0.0',
+        platform: 'Numbers-Don\'t-Lie Wellness Platform',
+        profileCompleteness: profile.metadata.profileCompleteness,
+        lastUpdated: profile.metadata.lastUpdated,
+        createdAt: profile.createdAt,
+        updatedAt: profile.updatedAt,
+        dataRetentionNotice: 'This data is for personal use only. Handle with care.'
+      }
+    };
+
     // Set headers for file download
     res.setHeader('Content-Type', 'application/json');
     res.setHeader('Content-Disposition', `attachment; filename="health-profile-${Date.now()}.json"`);
     
-    res.json({
-      exportDate: new Date().toISOString(),
-      user: {
-        email: profile.userId.email,
-        accountCreated: profile.userId.createdAt
-      },
-      profile: profile.toObject(),
-      metadata: {
-        version: '2.0.0',
-        platform: 'Numbers-Don\'t-Lie Wellness Platform',
-        dataRetentionNotice: 'This data is for personal use only. Handle with care.'
-      }
-    });
+    res.json(exportData);
   } catch (error) {
     console.error('Export error:', error);
     res.status(500).json({ 
@@ -296,7 +381,7 @@ router.get('/export', async (req, res) => {
 });
 
 // Delete health profile (GDPR compliance)
-router.delete('/', async (req, res) => {
+router.delete('/', requireDataConsent, async (req, res) => {
   try {
     const profile = await HealthProfile.findOneAndDelete({ userId: req.userId });
     
@@ -308,7 +393,8 @@ router.delete('/', async (req, res) => {
 
     res.json({
       message: 'Health profile deleted successfully',
-      deletedAt: new Date().toISOString()
+      deletedAt: new Date().toISOString(),
+      note: 'Your health data has been permanently removed from our systems'
     });
   } catch (error) {
     console.error('Delete profile error:', error);
@@ -318,7 +404,7 @@ router.delete('/', async (req, res) => {
   }
 });
 
-// Get anonymized profile for AI processing
+// Get anonymized profile for AI processing (removes PII)
 router.get('/anonymized', async (req, res) => {
   try {
     const profile = await HealthProfile.findOne({ userId: req.userId });
@@ -329,18 +415,75 @@ router.get('/anonymized', async (req, res) => {
       });
     }
 
-    // Remove PII for AI processing
+    // Use the model's anonymizeForAI method to remove PII
     const anonymized = profile.anonymizeForAI();
 
     res.json({
       anonymizedProfile: anonymized,
       purpose: 'AI processing',
-      notice: 'This data has been anonymized for privacy protection'
+      notice: 'This data has been anonymized for privacy protection',
+      piiRemoved: ['userId', '_id', 'createdAt', 'updatedAt']
     });
   } catch (error) {
     console.error('Anonymization error:', error);
     res.status(500).json({ 
       message: 'Server error while anonymizing profile' 
+    });
+  }
+});
+
+// Validate health metrics (called by frontend for real-time validation)
+router.post('/validate', [
+  body('field').isString(),
+  body('value').exists()
+], async (req, res) => {
+  try {
+    const { field, value } = req.body;
+    let isValid = true;
+    let message = '';
+
+    switch (field) {
+      case 'bmi':
+        const bmi = parseFloat(value);
+        if (bmi < 10 || bmi > 50) {
+          isValid = false;
+          message = 'BMI value seems unrealistic. Please check your height and weight.';
+        }
+        break;
+      
+      case 'weight':
+        const weight = parseFloat(value);
+        if (weight < 20 || weight > 300) {
+          isValid = false;
+          message = 'Weight must be between 20 and 300 kg';
+        }
+        break;
+      
+      case 'height':
+        const height = parseFloat(value);
+        if (height < 100 || height > 250) {
+          isValid = false;
+          message = 'Height must be between 100 and 250 cm';
+        }
+        break;
+      
+      case 'age':
+        const age = parseInt(value);
+        if (age < 13 || age > 120) {
+          isValid = false;
+          message = 'Age must be between 13 and 120 years';
+        }
+        break;
+      
+      default:
+        message = 'Unknown field for validation';
+    }
+
+    res.json({ isValid, message, field, value });
+  } catch (error) {
+    console.error('Validation error:', error);
+    res.status(500).json({ 
+      message: 'Server error during validation' 
     });
   }
 });
