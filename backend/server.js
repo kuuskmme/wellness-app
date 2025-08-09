@@ -1,10 +1,27 @@
-// server.js - Main server file with analytics routes (Step 4)
+// server.js - Enhanced server with comprehensive security (Step 6)
 const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
 const helmet = require('helmet');
 const passport = require('passport');
+const compression = require('compression');
 require('dotenv').config();
+
+// Import security middleware
+const {
+  rateLimiters,
+  securityHeaders,
+  sanitizeInput,
+  requestSizeLimit,
+  validateApiKey,
+  securityAuditLog,
+  enforceHTTPS,
+  sessionSecurity,
+  preventDataLeak,
+  mongoSanitize,
+  xssClean,
+  hpp
+} = require('./middleware/security');
 
 // Import passport configuration
 require('./config/passport');
@@ -12,143 +29,227 @@ require('./config/passport');
 // Import routes
 const authRoutes = require('./routes/auth');
 const healthProfileRoutes = require('./routes/healthProfile');
-const analyticsRoutes = require('./routes/analytics'); // NEW for Step 4
+const analyticsRoutes = require('./routes/analytics');
 
 // Initialize Express app
 const app = express();
 
-// Security middleware
-app.use(helmet());
+// Trust proxy (for production behind reverse proxy)
+app.set('trust proxy', 1);
 
-// CORS configuration for front-end communication
+// Compression middleware
+app.use(compression());
+
+// Security middleware - ORDER MATTERS!
+app.use(enforceHTTPS);
+app.use(securityHeaders);
+app.use(sessionSecurity);
+
+// CORS configuration
 app.use(cors({
-  origin: process.env.FRONTEND_URL || 'http://localhost:3000',
+  origin: function(origin, callback) {
+    const allowedOrigins = [
+      process.env.FRONTEND_URL || 'http://localhost:3000',
+      'http://localhost:3001', // Alternative dev port
+      'https://your-production-domain.com'
+    ];
+    
+    // Allow requests with no origin (mobile apps, Postman, etc.)
+    if (!origin) return callback(null, true);
+    
+    if (allowedOrigins.indexOf(origin) !== -1) {
+      callback(null, true);
+    } else {
+      callback(new Error('Not allowed by CORS'));
+    }
+  },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization']
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-API-Key'],
+  exposedHeaders: ['X-RateLimit-Limit', 'X-RateLimit-Remaining', 'X-RateLimit-Reset'],
+  maxAge: 86400 // 24 hours
 }));
 
-// Body parser middleware
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+// Body parser with size limits
+app.use(express.json({ limit: '10mb' }));
+app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+
+// Security: Sanitization and validation
+app.use(requestSizeLimit);
+app.use(mongoSanitize);
+app.use(xssClean);
+app.use(hpp());
+app.use(sanitizeInput);
+app.use(securityAuditLog);
 
 // Initialize Passport
 app.use(passport.initialize());
 
-// MongoDB connection with encryption at rest enabled
-mongoose.connect(process.env.MONGODB_URI || 'mongodb://localhost:27017/wellness-platform', {
-})
+// MongoDB connection with security options
+const mongoOptions = {
+  authSource: 'admin',
+  retryWrites: true,
+  w: 'majority',
+  serverSelectionTimeoutMS: 5000,
+  socketTimeoutMS: 45000,
+};
+
+mongoose.connect(process.env.MONGODB_URI || 'mongodb://localhost:27017/wellness-platform', mongoOptions)
 .then(() => {
   console.log('✅ Connected to MongoDB successfully');
-  console.log('🔒 MongoDB encryption at rest is configured at database level');
-  console.log('🔐 JWT Authentication enabled');
-  console.log('📧 Email verification system active');
-  console.log('🔑 2FA support enabled');
-  console.log('🤖 AI Integration ready'); // NEW for Step 4
-  console.log('📊 Health Analytics enabled'); // NEW for Step 4
+  console.log('🔒 Security features enabled:');
+  console.log('  - Rate limiting active');
+  console.log('  - Input sanitization enabled');
+  console.log('  - XSS protection active');
+  console.log('  - SQL injection prevention');
+  console.log('  - HTTPS enforcement ready');
+  console.log('  - Security headers configured');
+  console.log('  - Audit logging enabled');
 })
 .catch((err) => {
   console.error('❌ MongoDB connection error:', err);
   process.exit(1);
 });
 
-// Basic health check route
+// Health check endpoint (no rate limiting)
 app.get('/api/health', (req, res) => {
   res.json({ 
     status: 'healthy', 
     timestamp: new Date().toISOString(),
     environment: process.env.NODE_ENV || 'development',
-    features: {
-      authentication: true,
-      emailVerification: true,
-      twoFactorAuth: true,
-      oauth: ['google', 'github'],
-      rateLimit: true,
-      aiInsights: true, // NEW for Step 4
-      healthAnalytics: true, // NEW for Step 4
-      historicalTracking: true // NEW for Step 4
-    }
+    security: {
+      rateLimiting: true,
+      inputSanitization: true,
+      xssProtection: true,
+      corsEnabled: true,
+      httpsEnforced: process.env.NODE_ENV === 'production'
+    },
+    uptime: process.uptime()
   });
 });
 
-// API Routes
+// API Routes with specific rate limiters
+app.use('/api/auth/login', rateLimiters.auth);
+app.use('/api/auth/register', rateLimiters.auth);
+app.use('/api/auth/forgot-password', rateLimiters.passwordReset);
+app.use('/api/auth/reset-password', rateLimiters.passwordReset);
 app.use('/api/auth', authRoutes);
-app.use('/api/health-profile', healthProfileRoutes);
-app.use('/api/analytics', analyticsRoutes); // NEW for Step 4
 
-// Error handling middleware
-app.use((err, req, res, next) => {
-  console.error(err.stack);
+app.use('/api/health-profile', rateLimiters.profileUpdate);
+app.use('/api/health-profile/export', rateLimiters.export);
+app.use('/api/health-profile', healthProfileRoutes);
+
+app.use('/api/analytics/ai-insights', rateLimiters.aiInsights);
+app.use('/api/analytics', rateLimiters.api);
+app.use('/api/analytics', analyticsRoutes);
+
+// Error logging endpoint (for frontend error boundary)
+app.post('/api/errors/log', express.json(), (req, res) => {
+  const { message, stack, timestamp, userAgent, url } = req.body;
   
-  // Handle specific error types
-  if (err.name === 'ValidationError') {
-    return res.status(400).json({
-      message: 'Validation Error',
-      errors: Object.values(err.errors).map(e => e.message)
-    });
-  }
-  
-  if (err.name === 'UnauthorizedError') {
-    return res.status(401).json({
-      message: 'Unauthorized: Invalid or expired token'
-    });
-  }
-  
-  if (err.name === 'MongoError' && err.code === 11000) {
-    return res.status(409).json({
-      message: 'Duplicate entry found'
-    });
-  }
-  
-  // Default error response
-  res.status(err.status || 500).json({
-    message: err.message || 'Internal server error',
-    ...(process.env.NODE_ENV === 'development' && { stack: err.stack })
+  // Log to console (in production, send to error tracking service)
+  console.error('CLIENT_ERROR:', {
+    message,
+    stack,
+    timestamp,
+    userAgent,
+    url,
+    userId: req.userId
   });
+  
+  res.json({ logged: true });
 });
 
 // 404 handler
 app.use((req, res) => {
   res.status(404).json({
-    message: 'Endpoint not found',
-    path: req.originalUrl
+    error: {
+      message: 'Endpoint not found',
+      path: req.originalUrl,
+      method: req.method
+    }
   });
+});
+
+// Global error handler with data leak prevention
+app.use(preventDataLeak);
+
+// Graceful shutdown
+const gracefulShutdown = () => {
+  console.log('\n🛑 Shutting down gracefully...');
+  
+  // Close MongoDB connection
+  mongoose.connection.close(() => {
+    console.log('MongoDB connection closed');
+    process.exit(0);
+  });
+  
+  // Set timeout for forced shutdown
+  setTimeout(() => {
+    console.error('Forced shutdown after timeout');
+    process.exit(1);
+  }, 10000);
+};
+
+process.on('SIGTERM', gracefulShutdown);
+process.on('SIGINT', gracefulShutdown);
+
+// Handle uncaught exceptions
+process.on('uncaughtException', (err) => {
+  console.error('UNCAUGHT EXCEPTION:', err);
+  gracefulShutdown();
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('UNHANDLED REJECTION at:', promise, 'reason:', reason);
+  gracefulShutdown();
 });
 
 // Start server
 const PORT = process.env.PORT || 5000;
-app.listen(PORT, () => {
+const server = app.listen(PORT, () => {
   console.log(`
 🚀 Server is running on port ${PORT}
 📍 API Base URL: http://localhost:${PORT}/api
 📊 Environment: ${process.env.NODE_ENV || 'development'}
+🔒 Security Status: ENHANCED
 
-Available endpoints:
-- Auth:           /api/auth/*
-- Health Profile: /api/health-profile/*
-- Analytics:      /api/analytics/* (NEW)
-  - Health Metrics: GET /api/analytics/health-metrics
-  - AI Insights:    POST /api/analytics/ai-insights
-  - Weekly Summary: GET /api/analytics/health-summary/weekly
-  - Monthly Summary: GET /api/analytics/health-summary/monthly
-  - Health History: GET/POST /api/analytics/health-history
-  - Progress Data:  GET /api/analytics/progress-data
+Security Features Active:
+✓ Rate Limiting (Auth: 5/15min, API: 100/min)
+✓ Input Sanitization (XSS, SQL Injection prevention)
+✓ Request Size Limiting (10MB max)
+✓ Security Headers (Helmet.js)
+✓ CORS Protection
+✓ MongoDB Query Sanitization
+✓ Error Message Filtering
+✓ Audit Logging
+✓ Session Security
+${process.env.NODE_ENV === 'production' ? '✓ HTTPS Enforcement' : '⚠️  HTTPS not enforced (development mode)'}
 
-Features enabled:
-✓ Health Profile Management
-✓ BMI & Wellness Score Calculation
-✓ AI-Powered Health Insights
-✓ Historical Data Tracking
-✓ Weekly/Monthly Summaries
-✓ Progress Analytics
-✓ Smart Recommendations
-✓ Achievement Tracking
+Rate Limits:
+- Authentication: 5 attempts per 15 minutes
+- Password Reset: 3 attempts per hour
+- API Calls: 100 per minute
+- AI Insights: 10 per hour
+- Data Export: 5 per hour
+- Profile Updates: 20 per 5 minutes
   `);
   
-  // Check for required environment variables
+  // Warnings for missing configurations
+  if (!process.env.JWT_SECRET) {
+    console.warn('⚠️  Warning: JWT_SECRET not set. Using default (INSECURE)');
+  }
   if (!process.env.OPENAI_API_KEY) {
     console.warn('⚠️  Warning: OPENAI_API_KEY not set. AI insights will use fallback mode.');
   }
+  if (process.env.NODE_ENV !== 'production') {
+    console.warn('⚠️  Warning: Running in development mode. Some security features disabled.');
+  }
 });
+
+// Server timeout settings
+server.timeout = 30000; // 30 seconds
+server.keepAliveTimeout = 65000; // 65 seconds
+server.headersTimeout = 66000; // 66 seconds
 
 module.exports = app;
