@@ -1,10 +1,10 @@
 // src/pages/ProfilePage.js - Enhanced Health Profile page with Step 3 requirements
 import React, { useState, useEffect, useContext } from 'react';
 import axios from 'axios';
-import { AuthContext } from '../context/AuthContext';
+import { useAuth } from '../context/AuthContext';
 
 const ProfilePage = () => {
-  const { user } = useContext(AuthContext);
+  const { user } = useAuth();
   
   const [profile, setProfile] = useState({
     demographics: { age: '', gender: '' },

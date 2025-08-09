@@ -78,7 +78,7 @@ app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 app.use(requestSizeLimit);
 app.use(mongoSanitize);
 app.use(xssClean);
-app.use(hpp());
+app.use(hpp);
 app.use(sanitizeInput);
 app.use(securityAuditLog);
 
@@ -188,7 +188,7 @@ const gracefulShutdown = () => {
   setTimeout(() => {
     console.error('Forced shutdown after timeout');
     process.exit(1);
-  }, 10000);
+  }, 3000);
 };
 
 process.on('SIGTERM', gracefulShutdown);

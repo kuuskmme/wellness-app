@@ -1,7 +1,7 @@
 // src/App.js - Enhanced App with Error Boundary and Security (Step 6)
 import React from 'react';
 import { BrowserRouter as Router, Routes, Route, Link, Navigate } from 'react-router-dom';
-import { AuthProvider, AuthContext } from './context/AuthContext';
+import { AuthProvider, useAuth } from './context/AuthContext';
 import ErrorBoundary, { NetworkErrorHandler } from './components/ErrorBoundary';
 import ProtectedRoute from './components/ProtectedRoute';
 
@@ -18,7 +18,7 @@ import VerifyPendingPage from './pages/VerifyPendingPage';
 
 // Navigation Component with Security Context
 const Navigation = () => {
-  const { isAuthenticated, logout, user } = React.useContext(AuthContext);
+  const { isAuthenticated, logout, user } = useAuth();
   const [isMenuOpen, setIsMenuOpen] = React.useState(false);
 
   const handleLogout = () => {
