@@ -203,11 +203,11 @@ router.post('/resend-verification',
 // =====================
 
 router.post('/login',
-  loginLimiter,
+  // Commeting out this line temporarily loginLimiter, 
   [
     body('email').isEmail().normalizeEmail(),
     body('password').notEmpty(),
-    body('twoFactorCode').optional().isLength({ min: 6, max: 6 })
+    body('twoFactorCode').optional({ checkFalsy: true }).isLength({ min: 6, max: 6 })
   ],
   async (req, res) => {
     try {

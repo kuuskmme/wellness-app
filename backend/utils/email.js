@@ -2,7 +2,7 @@
 const nodemailer = require('nodemailer');
 
 // Create reusable transporter
-const createTransporter = () => {
+const createTransport = () => {
   // For development, you can use Ethereal Email (fake SMTP service)
   // For production, use real SMTP settings
   
@@ -19,7 +19,7 @@ const createTransporter = () => {
   }
   
   // Use configured SMTP settings
-  return nodemailer.createTransporter({
+  return nodemailer.createTransport({
     host: process.env.EMAIL_HOST,
     port: process.env.EMAIL_PORT || 587,
     secure: process.env.EMAIL_PORT === '465', // true for 465, false for other ports
@@ -203,7 +203,7 @@ const emailTemplates = {
 // Send email function
 const sendEmail = async (to, template, data) => {
   try {
-    const transporter = createTransporter();
+    const transporter = createTransport();
     const emailContent = emailTemplates[template](...data);
     
     const mailOptions = {

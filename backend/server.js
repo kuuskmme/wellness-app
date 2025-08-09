@@ -36,8 +36,6 @@ app.use(passport.initialize());
 
 // MongoDB connection with encryption at rest enabled
 mongoose.connect(process.env.MONGODB_URI || 'mongodb://localhost:27017/wellness-platform', {
-  useNewUrlParser: true,
-  useUnifiedTopology: true,
 })
 .then(() => {
   console.log('✅ Connected to MongoDB successfully');
