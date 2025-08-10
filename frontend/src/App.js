@@ -17,6 +17,7 @@ import VerifyEmailPage from './pages/VerifyEmailPage';
 import VerifyPendingPage from './pages/VerifyPendingPage';
 import NutritionPreferencesPage from './pages/NutritionPreferencesPage';
 import MealPlannerPage from './pages/MealPlannerPage';
+import RecipeSearchPage from './pages/RecipeSearchPage';
 
 // Navigation component
 const Navigation = () => {
@@ -196,6 +197,14 @@ function App() {
                 element={
                   <ProtectedRoute>
                     <MealPlannerPage />
+                  </ProtectedRoute>
+                }
+              />
+              <Route
+                path="/nutrition/recipes"
+                element={
+                  <ProtectedRoute>
+                    <RecipeSearchPage />
                   </ProtectedRoute>
                 }
               />

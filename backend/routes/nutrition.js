@@ -1,4 +1,4 @@
-// routes/nutrition.js - Updated nutrition platform routes with meal planning
+// routes/nutrition.js - Updated nutrition platform routes with meal planning and RAG
 const express = require('express');
 const router = express.Router();
 const { body, validationResult } = require('express-validator');
@@ -10,6 +10,7 @@ const MealPlan = require('../models/MealPlan');
 const HealthProfile = require('../models/HealthProfile');
 const { verifyToken } = require('../middleware/auth');
 const mealPlanningService = require('../utils/mealPlanningService');
+const ragService = require('../utils/ragService');
 
 // All routes require authentication
 router.use(verifyToken);
@@ -429,10 +430,164 @@ router.post('/meal-plan/:id/restore', [
 });
 
 // =====================
-// RECIPES
+// RECIPES WITH RAG
 // =====================
 
-// Search recipes
+// Search recipes with RAG
+router.get('/recipes/search', async (req, res) => {
+  try {
+    const {
+      query = '',
+      dietary,
+      cuisine,
+      maxCalories,
+      maxTime,
+      allergies,
+      ingredients,
+      page = 1,
+      limit = 20
+    } = req.query;
+
+    // Build filters
+    const filters = {
+      dietary: dietary ? dietary.split(',') : [],
+      cuisine: cuisine ? cuisine.split(',') : [],
+      allergies: allergies ? allergies.split(',') : [],
+      maxCalories: maxCalories ? parseInt(maxCalories) : null,
+      maxTime: maxTime ? parseInt(maxTime) : null
+    };
+
+    // Combine query with ingredients if provided
+    const searchQuery = ingredients 
+      ? `${query} ${ingredients}`.trim()
+      : query;
+
+    // Use RAG service for intelligent search
+    const recipes = await ragService.searchRecipes(searchQuery, filters);
+
+    res.json({
+      recipes,
+      query: searchQuery,
+      filters,
+      count: recipes.length
+    });
+  } catch (error) {
+    console.error('Search recipes error:', error);
+    res.status(500).json({ message: 'Server error while searching recipes' });
+  }
+});
+
+// Generate custom recipe with RAG
+router.post('/recipes/generate', verifyToken, async (req, res) => {
+  try {
+    const {
+      mealType,
+      cuisine,
+      maxCalories,
+      maxTime,
+      mainIngredients,
+      servings = 2
+    } = req.body;
+
+    // Get user preferences
+    const userPreferences = await UserPreferences.findOne({ userId: req.userId });
+    
+    if (!userPreferences) {
+      return res.status(400).json({ message: 'Please set up your nutrition preferences first' });
+    }
+
+    // Generate custom recipe using RAG
+    const customRecipe = await ragService.generateCustomRecipe(
+      userPreferences,
+      {
+        mealType,
+        cuisine,
+        maxCalories,
+        maxTime,
+        mainIngredients,
+        servings
+      }
+    );
+
+    // Optionally save to database
+    if (req.body.save) {
+      const recipe = new Recipe({
+        ...customRecipe,
+        userId: req.userId,
+        isCustom: true
+      });
+      await recipe.save();
+      customRecipe._id = recipe._id;
+    }
+
+    res.json({
+      message: 'Custom recipe generated successfully',
+      recipe: customRecipe
+    });
+  } catch (error) {
+    console.error('Generate recipe error:', error);
+    res.status(500).json({ message: 'Server error while generating recipe' });
+  }
+});
+
+// Get ingredient substitutions
+router.post('/recipes/substitute', verifyToken, async (req, res) => {
+  try {
+    const { ingredient, reason = 'preference', recipeId } = req.body;
+
+    if (!ingredient) {
+      return res.status(400).json({ message: 'Ingredient name is required' });
+    }
+
+    // Get user preferences
+    const userPreferences = await UserPreferences.findOne({ userId: req.userId });
+
+    // Generate substitutions using RAG
+    const substitutions = await ragService.generateSubstitutions(
+      ingredient,
+      reason,
+      userPreferences || { dietaryPreferences: [], allergies: [] }
+    );
+
+    res.json({
+      message: 'Substitutions generated successfully',
+      substitutions
+    });
+  } catch (error) {
+    console.error('Generate substitutions error:', error);
+    res.status(500).json({ message: 'Server error while generating substitutions' });
+  }
+});
+
+// Adjust recipe portions with recalculation
+router.post('/recipes/:id/adjust', async (req, res) => {
+  try {
+    const { servings } = req.body;
+    
+    if (!servings || servings < 1 || servings > 20) {
+      return res.status(400).json({ message: 'Invalid serving size (1-20)' });
+    }
+
+    const recipe = await Recipe.findById(req.params.id);
+    
+    if (!recipe) {
+      return res.status(404).json({ message: 'Recipe not found' });
+    }
+
+    // Use the model method to adjust servings
+    const adjustedRecipe = recipe.adjustServings(servings);
+
+    res.json({
+      message: 'Recipe adjusted successfully',
+      recipe: adjustedRecipe
+    });
+  } catch (error) {
+    console.error('Adjust recipe error:', error);
+    res.status(500).json({ message: 'Server error while adjusting recipe' });
+  }
+});
+
+// Get recipe details
 router.get('/recipes/search', async (req, res) => {
   try {
     const {
@@ -538,10 +693,10 @@ router.get('/ingredients/search', async (req, res) => {
 });
 
 // =====================
-// DATA INITIALIZATION
+// DATA INITIALIZATION & EMBEDDINGS
 // =====================
 
-// Initialize sample data (for development)
+// Initialize sample data and embeddings
 router.post('/init-data', async (req, res) => {
   try {
     // Check if data already exists
@@ -549,9 +704,13 @@ router.post('/init-data', async (req, res) => {
     const ingredientCount = await Ingredient.countDocuments();
     
     if (recipeCount >= 500 && ingredientCount >= 500) {
+      // Update embeddings for existing recipes
+      const embeddingResult = await ragService.updateRecipeEmbeddings();
+      
       return res.json({ 
-        message: 'Data already initialized',
-        counts: { recipes: recipeCount, ingredients: ingredientCount }
+        message: 'Data already initialized, embeddings updated',
+        counts: { recipes: recipeCount, ingredients: ingredientCount },
+        embeddings: embeddingResult
       });
     }
 
