@@ -12,9 +12,172 @@ const { verifyToken } = require('../middleware/auth');
 const mealPlanningService = require('../utils/mealPlanningService');
 const ragService = require('../utils/ragService');
 const nutritionCalculator = require('../utils/nutritionCalculator');
+const shoppingListService = require('../utils/shoppingListService');
+const nutritionAnalysisService = require('../utils/nutritionAnalysisService');
 
 // All routes require authentication
 router.use(verifyToken);
+
+// =====================
+// SHOPPING LISTS
+// =====================
+
+// Generate shopping list from meal plan
+router.get('/shopping-list', verifyToken, async (req, res) => {
+  try {
+    const { mealPlanId, excludeItems, includeCost, storeLayout } = req.query;
+    
+    if (!mealPlanId) {
+      // Get active meal plan
+      const activePlan = await MealPlan.findOne({
+        userId: req.userId,
+        status: 'active'
+      }).sort({ createdAt: -1 });
+      
+      if (!activePlan) {
+        return res.status(404).json({ message: 'No active meal plan found' });
+      }
+      
+      mealPlanId = activePlan._id;
+    }
+    
+    const options = {
+      exclude: excludeItems ? excludeItems.split(',') : [],
+      includeCost: includeCost === 'true',
+      storeLayout: storeLayout || 'standard'
+    };
+    
+    const shoppingList = await shoppingListService.generateFromMealPlan(mealPlanId, options);
+    
+    res.json({
+      message: 'Shopping list generated successfully',
+      shoppingList
+    });
+  } catch (error) {
+    console.error('Generate shopping list error:', error);
+    res.status(500).json({ message: 'Server error while generating shopping list' });
+  }
+});
+
+// Update shopping list items
+router.put('/shopping-list', verifyToken, async (req, res) => {
+  try {
+    const { shoppingList, updates } = req.body;
+    
+    if (!shoppingList || !updates) {
+      return res.status(400).json({ message: 'Shopping list and updates required' });
+    }
+    
+    const updatedList = shoppingListService.updateQuantities(shoppingList, updates);
+    
+    res.json({
+      message: 'Shopping list updated successfully',
+      shoppingList: updatedList
+    });
+  } catch (error) {
+    console.error('Update shopping list error:', error);
+    res.status(500).json({ message: 'Server error while updating shopping list' });
+  }
+});
+
+// Export shopping list
+router.post('/shopping-list/export', verifyToken, async (req, res) => {
+  try {
+    const { shoppingList, format = 'text' } = req.body;
+    
+    if (!shoppingList) {
+      return res.status(400).json({ message: 'Shopping list required' });
+    }
+    
+    const exported = shoppingListService.exportList(shoppingList, format);
+    
+    res.json({
+      message: 'Shopping list exported successfully',
+      format,
+      data: exported
+    });
+  } catch (error) {
+    console.error('Export shopping list error:', error);
+    res.status(500).json({ message: 'Server error while exporting shopping list' });
+  }
+});
+
+// =====================
+// NUTRITIONAL ANALYSIS
+// =====================
+
+// Get daily nutritional analysis
+router.get('/analysis/daily', verifyToken, async (req, res) => {
+  try {
+    const { date } = req.query;
+    const analysisDate = date ? new Date(date) : new Date();
+    
+    const analysis = await nutritionAnalysisService.analyzeDailyNutrition(
+      req.userId,
+      analysisDate
+    );
+    
+    res.json({
+      message: 'Daily analysis completed',
+      analysis
+    });
+  } catch (error) {
+    console.error('Daily analysis error:', error);
+    res.status(500).json({ message: 'Server error during daily analysis' });
+  }
+});
+
+// Get weekly nutritional analysis
+router.get('/analysis/weekly', verifyToken, async (req, res) => {
+  try {
+    const { weekStart } = req.query;
+    const startDate = weekStart ? moment(weekStart) : moment().startOf('week');
+    
+    const analysis = await nutritionAnalysisService.analyzeWeeklyNutrition(
+      req.userId,
+      startDate
+    );
+    
+    res.json({
+      message: 'Weekly analysis completed',
+      analysis
+    });
+  } catch (error) {
+    console.error('Weekly analysis error:', error);
+    res.status(500).json({ message: 'Server error during weekly analysis' });
+  }
+});
+
+// Generate AI nutritional insights
+router.post('/analysis/ai', verifyToken, async (req, res) => {
+  try {
+    const { analysisData, timeframe = 'weekly' } = req.body;
+    
+    let data = analysisData;
+    
+    // If no analysis data provided, generate it
+    if (!data) {
+      if (timeframe === 'daily') {
+        data = await nutritionAnalysisService.analyzeDailyNutrition(req.userId);
+      } else {
+        data = await nutritionAnalysisService.analyzeWeeklyNutrition(req.userId);
+      }
+    }
+    
+    const insights = await nutritionAnalysisService.generateAIInsights(
+      req.userId,
+      data
+    );
+    
+    res.json({
+      message: 'AI insights generated successfully',
+      insights
+    });
+  } catch (error) {
+    console.error('AI insights error:', error);
+    res.status(500).json({ message: 'Server error while generating AI insights' });
+  }
+});
 
 // =====================
 // USER PREFERENCES
