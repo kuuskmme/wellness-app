@@ -1,12 +1,15 @@
-// routes/nutrition.js - Nutrition platform routes
+// routes/nutrition.js - Updated nutrition platform routes with meal planning
 const express = require('express');
 const router = express.Router();
 const { body, validationResult } = require('express-validator');
+const moment = require('moment-timezone');
 const UserPreferences = require('../models/UserPreferences');
 const Recipe = require('../models/Recipe');
 const Ingredient = require('../models/Ingredient');
+const MealPlan = require('../models/MealPlan');
 const HealthProfile = require('../models/HealthProfile');
 const { verifyToken } = require('../middleware/auth');
+const mealPlanningService = require('../utils/mealPlanningService');
 
 // All routes require authentication
 router.use(verifyToken);
@@ -49,7 +52,7 @@ router.get('/preferences', async (req, res) => {
   }
 });
 
-// Update user preferences
+// Update user preferences (PUT /api/nutrition/preferences)
 router.put('/preferences', [
   body('dietaryPreferences').optional().isArray(),
   body('allergies').optional().isArray(),
@@ -75,25 +78,27 @@ router.put('/preferences', [
       // Update existing preferences
       Object.keys(req.body).forEach(key => {
         if (req.body[key] !== undefined) {
-          preferences[key] = req.body[key];
+          if (typeof req.body[key] === 'object' && !Array.isArray(req.body[key])) {
+            // For nested objects, merge
+            preferences[key] = { ...preferences[key], ...req.body[key] };
+          } else {
+            preferences[key] = req.body[key];
+          }
         }
       });
     }
-    
-    // Re-sync with health profile if requested
-    if (req.body.syncWithHealthProfile) {
+
+    // Auto-sync with health profile if needed
+    if (preferences.healthProfileLink.syncEnabled) {
       const healthProfile = await HealthProfile.findOne({ userId: req.userId });
       if (healthProfile) {
         await preferences.syncWithHealthProfile(healthProfile);
       }
     }
-    
-    preferences.metadata.updatedAt = new Date();
-    preferences.metadata.lastModifiedBy = 'user';
-    preferences.calculateCompletion();
-    
+
     await preferences.save();
-    
+    preferences.calculateCompletion();
+
     res.json({
       message: 'Preferences updated successfully',
       preferences,
@@ -110,25 +115,316 @@ router.post('/preferences/sync', async (req, res) => {
   try {
     const preferences = await UserPreferences.findOne({ userId: req.userId });
     const healthProfile = await HealthProfile.findOne({ userId: req.userId });
-    
-    if (!preferences) {
-      return res.status(404).json({ message: 'Preferences not found' });
+
+    if (!preferences || !healthProfile) {
+      return res.status(404).json({ message: 'Preferences or health profile not found' });
     }
-    
-    if (!healthProfile) {
-      return res.status(404).json({ message: 'Health profile not found. Please complete your health profile first.' });
-    }
-    
+
     await preferences.syncWithHealthProfile(healthProfile);
-    
+    await preferences.save();
+
     res.json({
-      message: 'Successfully synced with health profile',
+      message: 'Preferences synced with health profile',
       preferences,
-      importedData: preferences.healthProfileLink.importedData
+      syncedFields: ['calorieTarget', 'activityLevel', 'fitnessGoal']
     });
   } catch (error) {
-    console.error('Sync error:', error);
-    res.status(500).json({ message: 'Server error while syncing' });
+    console.error('Sync preferences error:', error);
+    res.status(500).json({ message: 'Server error while syncing preferences' });
+  }
+});
+
+// =====================
+// MEAL PLANNING
+// =====================
+
+// Generate meal plan (POST /api/nutrition/meal-plan)
+router.post('/meal-plan', [
+  body('duration').isIn(['daily', 'weekly']),
+  body('startDate').optional().isISO8601(),
+  body('preferences').optional().isObject()
+], async (req, res) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ errors: errors.array() });
+    }
+
+    const { duration, startDate, preferences: customPrefs } = req.body;
+    
+    // Use provided start date or tomorrow
+    const planStartDate = startDate 
+      ? moment(startDate).startOf('day').toDate()
+      : moment().add(1, 'day').startOf('day').toDate();
+
+    // Check for existing active plan
+    const existingPlan = await MealPlan.findOne({
+      userId: req.userId,
+      status: 'active',
+      startDate: { $lte: planStartDate },
+      endDate: { $gte: planStartDate }
+    });
+
+    if (existingPlan) {
+      return res.status(400).json({ 
+        message: 'You already have an active meal plan for this period',
+        existingPlan: existingPlan._id
+      });
+    }
+
+    // Generate meal plan using AI service
+    const planRequest = {
+      userId: req.userId,
+      duration,
+      startDate: planStartDate,
+      customPreferences: customPrefs
+    };
+
+    console.log('🍽️ Generating meal plan:', planRequest);
+    
+    const mealPlanData = await mealPlanningService.generateMealPlan(
+      req.userId, 
+      planRequest
+    );
+
+    // Save the meal plan
+    const mealPlan = new MealPlan(mealPlanData);
+    await mealPlan.save();
+
+    res.status(201).json({
+      message: 'Meal plan generated successfully',
+      mealPlan,
+      metadata: {
+        totalDays: mealPlan.dailyPlans.length,
+        totalMeals: mealPlan.dailyPlans.reduce((sum, day) => sum + day.meals.length, 0),
+        averageCalories: Math.round(
+          mealPlan.dailyPlans.reduce((sum, day) => sum + (day.totals?.calories || 0), 0) / 
+          mealPlan.dailyPlans.length
+        )
+      }
+    });
+  } catch (error) {
+    console.error('Generate meal plan error:', error);
+    res.status(500).json({ message: 'Server error while generating meal plan' });
+  }
+});
+
+// Get meal plans
+router.get('/meal-plan', async (req, res) => {
+  try {
+    const { status = 'active', limit = 10 } = req.query;
+    
+    const mealPlans = await MealPlan.find({
+      userId: req.userId,
+      status: status === 'all' ? { $exists: true } : status
+    })
+    .sort({ createdAt: -1 })
+    .limit(parseInt(limit))
+    .select('name type startDate endDate status createdAt dailyPlans.totals');
+
+    res.json({
+      mealPlans,
+      count: mealPlans.length
+    });
+  } catch (error) {
+    console.error('Get meal plans error:', error);
+    res.status(500).json({ message: 'Server error while fetching meal plans' });
+  }
+});
+
+// Get specific meal plan
+router.get('/meal-plan/:id', async (req, res) => {
+  try {
+    const mealPlan = await MealPlan.findOne({
+      _id: req.params.id,
+      userId: req.userId
+    });
+
+    if (!mealPlan) {
+      return res.status(404).json({ message: 'Meal plan not found' });
+    }
+
+    res.json({ mealPlan });
+  } catch (error) {
+    console.error('Get meal plan error:', error);
+    res.status(500).json({ message: 'Server error while fetching meal plan' });
+  }
+});
+
+// Update meal plan (swap, reorder, add manual meals)
+router.put('/meal-plan/:id', async (req, res) => {
+  try {
+    const { action, payload } = req.body;
+    
+    const mealPlan = await MealPlan.findOne({
+      _id: req.params.id,
+      userId: req.userId
+    });
+
+    if (!mealPlan) {
+      return res.status(404).json({ message: 'Meal plan not found' });
+    }
+
+    switch (action) {
+      case 'swap':
+        await mealPlan.swapMeals(
+          payload.day1Index,
+          payload.meal1Index,
+          payload.day2Index,
+          payload.meal2Index
+        );
+        break;
+        
+      case 'reorder':
+        const dayPlan = mealPlan.dailyPlans[payload.dayIndex];
+        const meals = dayPlan.meals;
+        const [movedMeal] = meals.splice(payload.fromIndex, 1);
+        meals.splice(payload.toIndex, 0, movedMeal);
+        
+        // Update order values
+        meals.forEach((meal, index) => {
+          meal.order = index;
+        });
+        
+        await mealPlan.save();
+        break;
+        
+      case 'add_manual':
+        await mealPlan.addManualMeal(payload.dayIndex, payload.meal);
+        break;
+        
+      case 'remove':
+        mealPlan.dailyPlans[payload.dayIndex].meals.splice(payload.mealIndex, 1);
+        await mealPlan.save();
+        break;
+        
+      case 'lock':
+        mealPlan.dailyPlans[payload.dayIndex].meals[payload.mealIndex].isLocked = true;
+        await mealPlan.save();
+        break;
+        
+      case 'unlock':
+        mealPlan.dailyPlans[payload.dayIndex].meals[payload.mealIndex].isLocked = false;
+        await mealPlan.save();
+        break;
+        
+      default:
+        return res.status(400).json({ message: 'Invalid action' });
+    }
+
+    res.json({
+      message: `Meal plan ${action} completed`,
+      mealPlan
+    });
+  } catch (error) {
+    console.error('Update meal plan error:', error);
+    res.status(500).json({ message: 'Server error while updating meal plan' });
+  }
+});
+
+// Regenerate meals (whole plan or individual meals)
+router.post('/meal-plan/:id/regenerate', async (req, res) => {
+  try {
+    const { scope = 'all', dayIndex, mealIndex } = req.body;
+    
+    const mealPlan = await MealPlan.findOne({
+      _id: req.params.id,
+      userId: req.userId
+    });
+
+    if (!mealPlan) {
+      return res.status(404).json({ message: 'Meal plan not found' });
+    }
+
+    // Save current version before regenerating
+    await mealPlan.saveVersion('Before regeneration');
+
+    if (scope === 'meal' && dayIndex !== undefined && mealIndex !== undefined) {
+      // Regenerate single meal
+      const meal = mealPlan.dailyPlans[dayIndex].meals[mealIndex];
+      
+      if (meal.isLocked) {
+        return res.status(400).json({ message: 'Cannot regenerate locked meal' });
+      }
+
+      // Get user preferences for regeneration
+      const preferences = await UserPreferences.findOne({ userId: req.userId });
+      
+      // Simple regeneration for individual meal
+      const alternatives = meal.alternatives || [];
+      if (alternatives.length > 0) {
+        // Use an alternative
+        const alt = alternatives[0];
+        meal.name = alt.name;
+        meal.nutrition.calories = alt.calories || meal.nutrition.calories;
+      } else {
+        // Generate new meal name
+        meal.name = `Regenerated ${meal.type}`;
+        meal.nutrition.calories = Math.round(meal.nutrition.calories * (0.9 + Math.random() * 0.2));
+      }
+      
+      await mealPlan.save();
+    } else {
+      // Regenerate entire plan
+      const planRequest = {
+        userId: req.userId,
+        duration: mealPlan.type,
+        startDate: mealPlan.startDate
+      };
+
+      const newPlanData = await mealPlanningService.generateMealPlan(
+        req.userId,
+        planRequest
+      );
+
+      // Keep locked meals
+      mealPlan.dailyPlans.forEach((day, dayIdx) => {
+        day.meals.forEach((meal, mealIdx) => {
+          if (meal.isLocked && newPlanData.dailyPlans[dayIdx]) {
+            newPlanData.dailyPlans[dayIdx].meals[mealIdx] = meal;
+          }
+        });
+      });
+
+      mealPlan.dailyPlans = newPlanData.dailyPlans;
+      mealPlan.generationMetadata = newPlanData.generationMetadata;
+      
+      await mealPlan.save();
+    }
+
+    res.json({
+      message: `${scope === 'meal' ? 'Meal' : 'Meal plan'} regenerated successfully`,
+      mealPlan
+    });
+  } catch (error) {
+    console.error('Regenerate meal plan error:', error);
+    res.status(500).json({ message: 'Server error while regenerating meal plan' });
+  }
+});
+
+// Restore previous version
+router.post('/meal-plan/:id/restore', [
+  body('version').isInt({ min: 1 })
+], async (req, res) => {
+  try {
+    const mealPlan = await MealPlan.findOne({
+      _id: req.params.id,
+      userId: req.userId
+    });
+
+    if (!mealPlan) {
+      return res.status(404).json({ message: 'Meal plan not found' });
+    }
+
+    await mealPlan.restoreVersion(req.body.version);
+
+    res.json({
+      message: `Meal plan restored to version ${req.body.version}`,
+      mealPlan
+    });
+  } catch (error) {
+    console.error('Restore meal plan error:', error);
+    res.status(500).json({ message: 'Server error while restoring meal plan' });
   }
 });
 
@@ -141,65 +437,51 @@ router.get('/recipes/search', async (req, res) => {
   try {
     const {
       query,
+      dietary,
       cuisine,
-      mealType,
       maxCalories,
       maxTime,
-      dietary,
-      excludeAllergens,
       page = 1,
       limit = 20
     } = req.query;
-    
-    // Build search query
-    const searchQuery = {};
+
+    const filter = {};
     
     if (query) {
-      searchQuery.$text = { $search: query };
+      filter.$or = [
+        { title: { $regex: query, $options: 'i' } },
+        { 'ingredients.name': { $regex: query, $options: 'i' } }
+      ];
+    }
+    
+    if (dietary) {
+      const dietaryArray = dietary.split(',');
+      if (dietaryArray.includes('vegetarian')) filter['dietaryInfo.isVegetarian'] = true;
+      if (dietaryArray.includes('vegan')) filter['dietaryInfo.isVegan'] = true;
+      if (dietaryArray.includes('gluten_free')) filter['dietaryInfo.isGlutenFree'] = true;
     }
     
     if (cuisine) {
-      searchQuery.cuisine = cuisine;
-    }
-    
-    if (mealType) {
-      searchQuery.mealType = mealType;
+      filter.cuisine = { $in: cuisine.split(',') };
     }
     
     if (maxCalories) {
-      searchQuery['nutrition.perServing.calories'] = { $lte: parseInt(maxCalories) };
+      filter['nutrition.calories'] = { $lte: parseInt(maxCalories) };
     }
     
     if (maxTime) {
-      searchQuery['time.total'] = { $lte: parseInt(maxTime) };
+      filter.cookingTime = { $lte: parseInt(maxTime) };
     }
-    
-    // Handle dietary filters
-    if (dietary) {
-      const dietaryFilters = dietary.split(',');
-      dietaryFilters.forEach(diet => {
-        if (diet === 'vegetarian') searchQuery['dietaryInfo.isVegetarian'] = true;
-        if (diet === 'vegan') searchQuery['dietaryInfo.isVegan'] = true;
-        if (diet === 'gluten_free') searchQuery['dietaryInfo.isGlutenFree'] = true;
-        if (diet === 'dairy_free') searchQuery['dietaryInfo.isDairyFree'] = true;
-      });
-    }
-    
-    // Exclude allergens
-    if (excludeAllergens) {
-      const allergens = excludeAllergens.split(',');
-      searchQuery['dietaryInfo.allergens'] = { $nin: allergens };
-    }
-    
+
     const skip = (page - 1) * limit;
     
-    const recipes = await Recipe.find(searchQuery)
-      .limit(parseInt(limit))
+    const recipes = await Recipe.find(filter)
       .skip(skip)
-      .sort({ 'ratings.average': -1, 'metadata.popularity': -1 });
-    
-    const total = await Recipe.countDocuments(searchQuery);
-    
+      .limit(parseInt(limit))
+      .select('title cuisine cookingTime nutrition dietaryInfo image');
+
+    const total = await Recipe.countDocuments(filter);
+
     res.json({
       recipes,
       pagination: {
@@ -210,41 +492,21 @@ router.get('/recipes/search', async (req, res) => {
       }
     });
   } catch (error) {
-    console.error('Recipe search error:', error);
+    console.error('Search recipes error:', error);
     res.status(500).json({ message: 'Server error while searching recipes' });
   }
 });
 
-// Get recipe by ID
+// Get recipe details
 router.get('/recipes/:id', async (req, res) => {
   try {
-    const recipe = await Recipe.findById(req.params.id)
-      .populate('ingredients.ingredientId');
+    const recipe = await Recipe.findById(req.params.id);
     
     if (!recipe) {
       return res.status(404).json({ message: 'Recipe not found' });
     }
-    
-    // Check compatibility with user preferences
-    const preferences = await UserPreferences.findOne({ userId: req.userId });
-    if (preferences) {
-      const compatibility = recipe.checkDietaryCompatibility(
-        preferences.dietaryPreferences,
-        preferences.allergies
-      );
-      
-      res.json({
-        recipe,
-        compatibility,
-        userPreferences: {
-          canEat: compatibility.suitable,
-          warnings: compatibility.warnings,
-          conflicts: compatibility.conflicts
-        }
-      });
-    } else {
-      res.json({ recipe });
-    }
+
+    res.json({ recipe });
   } catch (error) {
     console.error('Get recipe error:', error);
     res.status(500).json({ message: 'Server error while fetching recipe' });
@@ -258,97 +520,61 @@ router.get('/recipes/:id', async (req, res) => {
 // Search ingredients
 router.get('/ingredients/search', async (req, res) => {
   try {
-    const { query, category, limit = 10 } = req.query;
+    const { query } = req.query;
     
-    const searchQuery = {};
+    const filter = query 
+      ? { label: { $regex: query, $options: 'i' } }
+      : {};
     
-    if (query) {
-      searchQuery.$or = [
-        { label: new RegExp(query, 'i') },
-        { alternativeNames: new RegExp(query, 'i') }
-      ];
-    }
-    
-    if (category) {
-      searchQuery.category = category;
-    }
-    
-    const ingredients = await Ingredient.find(searchQuery)
-      .limit(parseInt(limit))
-      .sort({ 'metadata.popularity': -1 });
-    
+    const ingredients = await Ingredient.find(filter)
+      .limit(50)
+      .select('label unit category nutritionPer100g');
+
     res.json({ ingredients });
   } catch (error) {
-    console.error('Ingredient search error:', error);
+    console.error('Search ingredients error:', error);
     res.status(500).json({ message: 'Server error while searching ingredients' });
   }
 });
 
-// Get ingredient nutrition
-router.get('/ingredients/:id/nutrition', async (req, res) => {
-  try {
-    const { quantity = 100, unit = 'g' } = req.query;
-    
-    const ingredient = await Ingredient.findById(req.params.id);
-    
-    if (!ingredient) {
-      return res.status(404).json({ message: 'Ingredient not found' });
-    }
-    
-    const nutrition = ingredient.calculateNutrition(parseFloat(quantity), unit);
-    
-    res.json({
-      ingredient: {
-        id: ingredient.id,
-        label: ingredient.label,
-        category: ingredient.category
-      },
-      quantity: parseFloat(quantity),
-      unit,
-      nutrition
-    });
-  } catch (error) {
-    console.error('Get nutrition error:', error);
-    res.status(500).json({ message: 'Server error while calculating nutrition' });
-  }
-});
-
 // =====================
-// INITIALIZATION
+// DATA INITIALIZATION
 // =====================
 
-// Initialize database with sample data (development only)
+// Initialize sample data (for development)
 router.post('/init-data', async (req, res) => {
   try {
-    if (process.env.NODE_ENV === 'production') {
-      return res.status(403).json({ message: 'Not allowed in production' });
-    }
-    
     // Check if data already exists
     const recipeCount = await Recipe.countDocuments();
     const ingredientCount = await Ingredient.countDocuments();
     
     if (recipeCount >= 500 && ingredientCount >= 500) {
-      return res.json({
-        message: 'Database already initialized',
+      return res.json({ 
+        message: 'Data already initialized',
         counts: { recipes: recipeCount, ingredients: ingredientCount }
       });
     }
-    
-    // Generate sample ingredients
-    const sampleIngredients = generateSampleIngredients();
-    const ingredients = await Ingredient.insertMany(sampleIngredients);
-    
-    // Generate sample recipes using the ingredients
-    const sampleRecipes = generateSampleRecipes(ingredients);
-    const recipes = await Recipe.insertMany(sampleRecipes);
-    
+
+    // Generate sample recipes if needed
+    if (recipeCount < 500) {
+      const sampleRecipes = generateSampleRecipes(500 - recipeCount);
+      await Recipe.insertMany(sampleRecipes);
+    }
+
+    // Generate sample ingredients if needed
+    if (ingredientCount < 500) {
+      const sampleIngredients = generateSampleIngredients(500 - ingredientCount);
+      await Ingredient.insertMany(sampleIngredients);
+    }
+
+    const finalCounts = {
+      recipes: await Recipe.countDocuments(),
+      ingredients: await Ingredient.countDocuments()
+    };
+
     res.json({
-      message: 'Database initialized with sample data',
-      counts: {
-        ingredients: ingredients.length,
-        recipes: recipes.length
-      }
+      message: 'Sample data initialized successfully',
+      counts: finalCounts
     });
   } catch (error) {
     console.error('Init data error:', error);
@@ -356,163 +582,75 @@ router.post('/init-data', async (req, res) => {
   }
 });
 
-// Helper function to generate sample ingredients
-function generateSampleIngredients() {
-  const categories = {
-    vegetables: ['tomato', 'onion', 'garlic', 'carrot', 'potato', 'spinach', 'broccoli', 'bell pepper'],
-    fruits: ['apple', 'banana', 'orange', 'strawberry', 'blueberry', 'lemon', 'avocado'],
-    proteins: ['chicken breast', 'ground beef', 'salmon', 'tofu', 'eggs', 'black beans', 'lentils'],
-    grains: ['rice', 'pasta', 'quinoa', 'oats', 'bread', 'flour'],
-    dairy: ['milk', 'cheese', 'yogurt', 'butter', 'cream'],
-    herbs_spices: ['salt', 'pepper', 'oregano', 'basil', 'cumin', 'paprika', 'cinnamon'],
-    oils_fats: ['olive oil', 'coconut oil', 'butter', 'vegetable oil']
-  };
-  
-  const ingredients = [];
-  let id = 1;
-  
-  Object.entries(categories).forEach(([category, items]) => {
-    items.forEach(item => {
-      ingredients.push({
-        id: `ing_${id++}`,
-        label: item,
-        category,
-        unit: { standard: category === 'oils_fats' || category === 'dairy' ? 'ml' : 'g' },
-        nutrition: {
-          per100: {
-            calories: Math.floor(Math.random() * 300) + 20,
-            macros: {
-              protein: Math.random() * 30,
-              carbs: Math.random() * 50,
-              fat: Math.random() * 20,
-              fiber: Math.random() * 10,
-              sugar: Math.random() * 15
-            },
-            micronutrients: {
-              sodium: Math.floor(Math.random() * 500),
-              cholesterol: Math.floor(Math.random() * 100)
-            }
-          }
-        },
-        dietaryInfo: {
-          isVegetarian: category !== 'proteins' || ['tofu', 'eggs', 'black beans', 'lentils'].includes(item),
-          isVegan: category !== 'proteins' && category !== 'dairy',
-          isGlutenFree: category !== 'grains' || ['rice', 'quinoa', 'oats'].includes(item),
-          isDairyFree: category !== 'dairy'
-        }
-      });
-    });
-  });
-  
-  // Generate more to reach 500
-  while (ingredients.length < 500) {
-    const randomCategory = Object.keys(categories)[Math.floor(Math.random() * Object.keys(categories).length)];
-    ingredients.push({
-      id: `ing_${id++}`,
-      label: `ingredient_${id}`,
-      category: randomCategory,
-      unit: { standard: 'g' },
-      nutrition: {
-        per100: {
-          calories: Math.floor(Math.random() * 300) + 20,
-          macros: {
-            protein: Math.random() * 30,
-            carbs: Math.random() * 50,
-            fat: Math.random() * 20,
-            fiber: Math.random() * 10,
-            sugar: Math.random() * 15
-          },
-          micronutrients: {
-            sodium: Math.floor(Math.random() * 500),
-            cholesterol: Math.floor(Math.random() * 100)
-          }
-        }
-      },
-      dietaryInfo: {
-        isVegetarian: Math.random() > 0.3,
-        isVegan: Math.random() > 0.5,
-        isGlutenFree: Math.random() > 0.4,
-        isDairyFree: Math.random() > 0.4
-      }
-    });
-  }
-  
-  return ingredients;
-}
-
-// Helper function to generate sample recipes
-function generateSampleRecipes(ingredients) {
-  const cuisines = ['italian', 'mexican', 'chinese', 'japanese', 'indian', 'thai', 'american', 'mediterranean'];
-  const mealTypes = ['breakfast', 'lunch', 'dinner', 'snack'];
+// Helper functions for generating sample data
+function generateSampleRecipes(count) {
   const recipes = [];
+  const cuisines = ['italian', 'mexican', 'chinese', 'japanese', 'indian', 'thai', 'greek', 'american'];
+  const mealTypes = ['breakfast', 'lunch', 'dinner', 'snack'];
   
-  for (let i = 1; i <= 500; i++) {
-    const numIngredients = Math.floor(Math.random() * 8) + 3;
-    const recipeIngredients = [];
-    
-    for (let j = 0; j < numIngredients; j++) {
-      const randomIngredient = ingredients[Math.floor(Math.random() * ingredients.length)];
-      recipeIngredients.push({
-        ingredientId: randomIngredient._id,
-        name: randomIngredient.label,
-        quantity: Math.floor(Math.random() * 200) + 10,
-        unit: 'g'
-      });
-    }
-    
-    const totalCalories = recipeIngredients.reduce((sum, ing) => {
-      const ingredient = ingredients.find(i => i._id === ing.ingredientId);
-      return sum + (ingredient.nutrition.per100.calories * ing.quantity / 100);
-    }, 0);
-    
-    const servings = 4;
-    
+  for (let i = 0; i < count; i++) {
     recipes.push({
-      id: `recipe_${i}`,
-      title: `Recipe ${i}`,
-      cuisine: cuisines[Math.floor(Math.random() * cuisines.length)],
-      ingredients: recipeIngredients,
-      instructions: [
-        { stepNumber: 1, instruction: 'Prepare ingredients', duration: 10 },
-        { stepNumber: 2, instruction: 'Cook ingredients', duration: 20 },
-        { stepNumber: 3, instruction: 'Serve hot', duration: 5 }
+      title: `Recipe ${i + 1}`,
+      cuisine: cuisines[i % cuisines.length],
+      mealType: mealTypes[i % mealTypes.length],
+      description: `Delicious ${cuisines[i % cuisines.length]} dish`,
+      cookingTime: 15 + Math.floor(Math.random() * 45),
+      servings: 2 + Math.floor(Math.random() * 3),
+      ingredients: [
+        { name: 'ingredient1', quantity: 100, unit: 'g' },
+        { name: 'ingredient2', quantity: 200, unit: 'ml' }
       ],
+      instructions: ['Step 1', 'Step 2', 'Step 3'],
       nutrition: {
-        servingSize: { value: 1, unit: 'serving' },
-        servings,
-        perServing: {
-          calories: Math.round(totalCalories / servings),
-          macros: {
-            protein: Math.random() * 30,
-            carbs: Math.random() * 60,
-            fat: Math.random() * 25,
-            fiber: Math.random() * 10,
-            sugar: Math.random() * 20
-          },
-          micronutrients: {
-            sodium: Math.floor(Math.random() * 800),
-            cholesterol: Math.floor(Math.random() * 100)
-          }
-        }
+        calories: 200 + Math.floor(Math.random() * 600),
+        protein: 10 + Math.floor(Math.random() * 40),
+        carbs: 20 + Math.floor(Math.random() * 60),
+        fat: 5 + Math.floor(Math.random() * 30),
+        fiber: Math.floor(Math.random() * 15),
+        sodium: 100 + Math.floor(Math.random() * 900),
+        servings: 1
       },
-      time: {
-        prep: 15,
-        cook: 30,
-        total: 45
-      },
-      mealType: [mealTypes[Math.floor(Math.random() * mealTypes.length)]],
       dietaryInfo: {
         isVegetarian: Math.random() > 0.5,
         isVegan: Math.random() > 0.7,
         isGlutenFree: Math.random() > 0.6,
-        isDairyFree: Math.random() > 0.5
-      },
-      difficulty: 'medium',
-      tags: ['quick', 'easy', 'healthy']
+        isDairyFree: Math.random() > 0.6,
+        allergens: []
+      }
     });
   }
   
   return recipes;
+}
+
+function generateSampleIngredients(count) {
+  const ingredients = [];
+  const categories = ['vegetable', 'fruit', 'protein', 'grain', 'dairy', 'spice', 'oil'];
+  const units = ['g', 'ml', 'unit'];
+  
+  for (let i = 0; i < count; i++) {
+    ingredients.push({
+      label: `Ingredient ${i + 1}`,
+      category: categories[i % categories.length],
+      unit: units[i % units.length],
+      nutritionPer100g: {
+        calories: 50 + Math.floor(Math.random() * 300),
+        protein: Math.floor(Math.random() * 30),
+        carbs: Math.floor(Math.random() * 50),
+        fat: Math.floor(Math.random() * 20),
+        fiber: Math.floor(Math.random() * 10),
+        sodium: Math.floor(Math.random() * 500)
+      },
+      commonMeasures: [
+        { label: '1 cup', grams: 240 },
+        { label: '1 tbsp', grams: 15 }
+      ],
+      allergens: [],
+      substitutes: []
+    });
+  }
+  
+  return ingredients;
 }
 
 module.exports = router;
