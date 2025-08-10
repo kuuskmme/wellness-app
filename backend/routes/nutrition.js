@@ -11,6 +11,7 @@ const HealthProfile = require('../models/HealthProfile');
 const { verifyToken } = require('../middleware/auth');
 const mealPlanningService = require('../utils/mealPlanningService');
 const ragService = require('../utils/ragService');
+const nutritionCalculator = require('../utils/nutritionCalculator');
 
 // All routes require authentication
 router.use(verifyToken);
@@ -559,7 +560,7 @@ router.post('/recipes/substitute', verifyToken, async (req, res) => {
   }
 });
 
-// Adjust recipe portions with recalculation
+// Adjust recipe portions with function calling recalculation
 router.post('/recipes/:id/adjust', async (req, res) => {
   try {
     const { servings } = req.body;
@@ -574,16 +575,69 @@ router.post('/recipes/:id/adjust', async (req, res) => {
       return res.status(404).json({ message: 'Recipe not found' });
     }
 
-    // Use the model method to adjust servings
-    const adjustedRecipe = recipe.adjustServings(servings);
+    // Use function calling to adjust portions
+    const adjustmentResult = await nutritionCalculator.executeFunction('adjust_portions', {
+      original_servings: recipe.servings,
+      new_servings: servings,
+      ingredients: recipe.ingredients,
+      nutrition: recipe.nutrition
+    });
+
+    // Handle errors from function calling
+    if (adjustmentResult._fallback) {
+      console.warn('Using fallback calculation for portion adjustment');
+    }
+
+    const adjustedRecipe = {
+      ...recipe.toObject(),
+      servings: adjustmentResult.servings,
+      ingredients: adjustmentResult.ingredients,
+      nutrition: adjustmentResult.nutrition
+    };
 
     res.json({
       message: 'Recipe adjusted successfully',
-      recipe: adjustedRecipe
+      recipe: adjustedRecipe,
+      calculation_method: adjustmentResult._method || 'function_calling'
     });
   } catch (error) {
     console.error('Adjust recipe error:', error);
     res.status(500).json({ message: 'Server error while adjusting recipe' });
+  }
+});
+
+// Calculate nutrition for custom recipe with function calling
+router.post('/recipes/calculate-nutrition', verifyToken, async (req, res) => {
+  try {
+    const { ingredients, servings = 1 } = req.body;
+
+    if (!ingredients || !Array.isArray(ingredients) || ingredients.length === 0) {
+      return res.status(400).json({ message: 'Ingredients array is required' });
+    }
+
+    // Use function calling to calculate nutrition
+    const nutritionResult = await nutritionCalculator.executeFunction('calculate_nutrition', {
+      ingredients,
+      servings,
+      operation: 'per_serving'
+    });
+
+    // Validate the calculated nutrition
+    const validation = await nutritionCalculator.executeFunction('validate_nutrition', {
+      ...nutritionResult,
+      servings
+    });
+
+    res.json({
+      message: 'Nutrition calculated successfully',
+      nutrition: nutritionResult,
+      validation,
+      calculation_method: nutritionResult._method || 'function_calling',
+      fallback_used: nutritionResult._fallback || false
+    });
+  } catch (error) {
+    console.error('Calculate nutrition error:', error);
+    res.status(500).json({ message: 'Server error while calculating nutrition' });
   }
 });
 
