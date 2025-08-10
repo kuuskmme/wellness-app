@@ -1,4 +1,4 @@
-// src/App.js - Enhanced App with Error Boundary and Security (Step 6)
+// src/App.js - Complete Updated File with Nutrition Routes
 import React from 'react';
 import { BrowserRouter as Router, Routes, Route, Link, Navigate } from 'react-router-dom';
 import { AuthProvider, useAuth } from './context/AuthContext';
@@ -16,10 +16,19 @@ import ResetPasswordPage from './pages/ResetPasswordPage';
 import VerifyEmailPage from './pages/VerifyEmailPage';
 import VerifyPendingPage from './pages/VerifyPendingPage';
 
+// NEW: Nutrition Pages
+import NutritionPreferencesPage from './pages/NutritionPreferencesPage';
+// Future imports for next steps:
+// import MealPlannerPage from './pages/MealPlannerPage';
+// import RecipeSearchPage from './pages/RecipeSearchPage';
+// import ShoppingListPage from './pages/ShoppingListPage';
+// import NutritionAnalysisPage from './pages/NutritionAnalysisPage';
+
 // Navigation Component with Security Context
 const Navigation = () => {
   const { isAuthenticated, logout, user } = useAuth();
   const [isMenuOpen, setIsMenuOpen] = React.useState(false);
+  const [showNutritionMenu, setShowNutritionMenu] = React.useState(false);
 
   const handleLogout = () => {
     logout();
@@ -44,6 +53,59 @@ const Navigation = () => {
                 <Link to="/profile" className="text-gray-700 hover:text-blue-600">
                   Profile
                 </Link>
+                
+                {/* NEW: Nutrition Dropdown */}
+                <div className="relative">
+                  <button
+                    onClick={() => setShowNutritionMenu(!showNutritionMenu)}
+                    className="text-gray-700 hover:text-blue-600 flex items-center"
+                  >
+                    Nutrition
+                    <svg className="w-4 h-4 ml-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                    </svg>
+                  </button>
+                  {showNutritionMenu && (
+                    <div className="absolute right-0 mt-2 w-48 bg-white rounded-lg shadow-lg z-10">
+                      <Link
+                        to="/nutrition-preferences"
+                        className="block px-4 py-2 text-gray-700 hover:bg-gray-100"
+                        onClick={() => setShowNutritionMenu(false)}
+                      >
+                        🥗 Preferences
+                      </Link>
+                      <Link
+                        to="/meal-planner"
+                        className="block px-4 py-2 text-gray-700 hover:bg-gray-100"
+                        onClick={() => setShowNutritionMenu(false)}
+                      >
+                        📅 Meal Planner
+                      </Link>
+                      <Link
+                        to="/recipes"
+                        className="block px-4 py-2 text-gray-700 hover:bg-gray-100"
+                        onClick={() => setShowNutritionMenu(false)}
+                      >
+                        🍳 Recipes
+                      </Link>
+                      <Link
+                        to="/shopping-list"
+                        className="block px-4 py-2 text-gray-700 hover:bg-gray-100"
+                        onClick={() => setShowNutritionMenu(false)}
+                      >
+                        🛒 Shopping List
+                      </Link>
+                      <Link
+                        to="/nutrition-analysis"
+                        className="block px-4 py-2 text-gray-700 hover:bg-gray-100"
+                        onClick={() => setShowNutritionMenu(false)}
+                      >
+                        📊 Analysis
+                      </Link>
+                    </div>
+                  )}
+                </div>
+                
                 <span className="text-gray-500">|</span>
                 <span className="text-sm text-gray-600">
                   {user?.email}
@@ -104,6 +166,47 @@ const Navigation = () => {
                 >
                   Profile
                 </Link>
+                
+                {/* NEW: Mobile Nutrition Menu */}
+                <div className="py-2">
+                  <div className="font-semibold text-gray-700">Nutrition</div>
+                  <Link
+                    to="/nutrition-preferences"
+                    className="block pl-4 py-1 text-gray-600 hover:text-blue-600"
+                    onClick={() => setIsMenuOpen(false)}
+                  >
+                    Preferences
+                  </Link>
+                  <Link
+                    to="/meal-planner"
+                    className="block pl-4 py-1 text-gray-600 hover:text-blue-600"
+                    onClick={() => setIsMenuOpen(false)}
+                  >
+                    Meal Planner
+                  </Link>
+                  <Link
+                    to="/recipes"
+                    className="block pl-4 py-1 text-gray-600 hover:text-blue-600"
+                    onClick={() => setIsMenuOpen(false)}
+                  >
+                    Recipes
+                  </Link>
+                  <Link
+                    to="/shopping-list"
+                    className="block pl-4 py-1 text-gray-600 hover:text-blue-600"
+                    onClick={() => setIsMenuOpen(false)}
+                  >
+                    Shopping List
+                  </Link>
+                  <Link
+                    to="/nutrition-analysis"
+                    className="block pl-4 py-1 text-gray-600 hover:text-blue-600"
+                    onClick={() => setIsMenuOpen(false)}
+                  >
+                    Analysis
+                  </Link>
+                </div>
+                
                 <div className="py-2 text-sm text-gray-600">
                   {user?.email}
                 </div>
@@ -144,9 +247,9 @@ const Footer = () => {
   return (
     <footer className="bg-gray-800 text-white py-8 mt-auto">
       <div className="container mx-auto px-4 text-center">
-        <p>© 2024 Numbers Don't Lie - Wellness Platform. All rights reserved.</p>
+        <p>© 2024 Numbers Don't Lie - Wellness & Nutrition Platform. All rights reserved.</p>
         <p className="text-sm text-gray-400 mt-2">
-          Your health data is encrypted and secure 🔒
+          Your health data is encrypted and secure 🔒 | AI-powered nutrition planning 🤖
         </p>
         <div className="mt-4 text-sm text-gray-400">
           <Link to="/privacy" className="hover:text-white mx-2">Privacy Policy</Link>
@@ -196,7 +299,7 @@ const SecurityPage = () => {
         <div>
           <h2 className="text-xl font-semibold mb-2">🔒 Data Encryption</h2>
           <p className="text-gray-600">
-            All your health data is encrypted both in transit (HTTPS) and at rest (AES-256).
+            All your health and nutrition data is encrypted both in transit (HTTPS) and at rest (AES-256).
           </p>
         </div>
         
@@ -261,6 +364,54 @@ const TermsPage = () => (
   </div>
 );
 
+// NEW: Placeholder pages for future nutrition features
+const MealPlannerPage = () => (
+  <div className="max-w-4xl mx-auto px-4 py-8">
+    <h1 className="text-3xl font-bold mb-6">Meal Planner</h1>
+    <div className="bg-white rounded-lg shadow p-6">
+      <p className="text-gray-600">
+        Meal planning feature coming soon! This will include AI-powered meal plan generation.
+      </p>
+      <Link to="/nutrition-preferences" className="mt-4 inline-block bg-blue-600 text-white px-4 py-2 rounded">
+        Set Up Preferences First
+      </Link>
+    </div>
+  </div>
+);
+
+const RecipeSearchPage = () => (
+  <div className="max-w-4xl mx-auto px-4 py-8">
+    <h1 className="text-3xl font-bold mb-6">Recipe Search</h1>
+    <div className="bg-white rounded-lg shadow p-6">
+      <p className="text-gray-600">
+        Recipe search and generation feature coming soon!
+      </p>
+    </div>
+  </div>
+);
+
+const ShoppingListPage = () => (
+  <div className="max-w-4xl mx-auto px-4 py-8">
+    <h1 className="text-3xl font-bold mb-6">Shopping List</h1>
+    <div className="bg-white rounded-lg shadow p-6">
+      <p className="text-gray-600">
+        Shopping list generation feature coming soon!
+      </p>
+    </div>
+  </div>
+);
+
+const NutritionAnalysisPage = () => (
+  <div className="max-w-4xl mx-auto px-4 py-8">
+    <h1 className="text-3xl font-bold mb-6">Nutrition Analysis</h1>
+    <div className="bg-white rounded-lg shadow p-6">
+      <p className="text-gray-600">
+        Detailed nutrition analysis feature coming soon!
+      </p>
+    </div>
+  </div>
+);
+
 function App() {
   // Check for security headers in development
   React.useEffect(() => {
@@ -270,6 +421,7 @@ function App() {
       console.log('- Network Error Handler: ✓');
       console.log('- Protected Routes: ✓');
       console.log('- Secure Token Storage: ✓');
+      console.log('🥗 Nutrition Platform: ACTIVE');
     }
   }, []);
 
@@ -299,7 +451,7 @@ function App() {
                   <Route path="/auth/google/callback" element={<OAuthCallback />} />
                   <Route path="/auth/github/callback" element={<OAuthCallback />} />
                   
-                  {/* Protected routes */}
+                  {/* Protected routes - Health Platform */}
                   <Route 
                     path="/dashboard" 
                     element={
@@ -316,6 +468,58 @@ function App() {
                       <ProtectedRoute>
                         <ErrorBoundary>
                           <ProfilePage />
+                        </ErrorBoundary>
+                      </ProtectedRoute>
+                    } 
+                  />
+                  
+                  {/* NEW: Protected routes - Nutrition Platform */}
+                  <Route 
+                    path="/nutrition-preferences" 
+                    element={
+                      <ProtectedRoute>
+                        <ErrorBoundary>
+                          <NutritionPreferencesPage />
+                        </ErrorBoundary>
+                      </ProtectedRoute>
+                    } 
+                  />
+                  <Route 
+                    path="/meal-planner" 
+                    element={
+                      <ProtectedRoute>
+                        <ErrorBoundary>
+                          <MealPlannerPage />
+                        </ErrorBoundary>
+                      </ProtectedRoute>
+                    } 
+                  />
+                  <Route 
+                    path="/recipes" 
+                    element={
+                      <ProtectedRoute>
+                        <ErrorBoundary>
+                          <RecipeSearchPage />
+                        </ErrorBoundary>
+                      </ProtectedRoute>
+                    } 
+                  />
+                  <Route 
+                    path="/shopping-list" 
+                    element={
+                      <ProtectedRoute>
+                        <ErrorBoundary>
+                          <ShoppingListPage />
+                        </ErrorBoundary>
+                      </ProtectedRoute>
+                    } 
+                  />
+                  <Route 
+                    path="/nutrition-analysis" 
+                    element={
+                      <ProtectedRoute>
+                        <ErrorBoundary>
+                          <NutritionAnalysisPage />
                         </ErrorBoundary>
                       </ProtectedRoute>
                     } 

@@ -1,4 +1,4 @@
-// backend/server.js - Complete Updated File with Fixed CORS
+// backend/server.js - Complete Updated File with Nutrition Routes
 const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
@@ -30,6 +30,7 @@ require('./config/passport');
 const authRoutes = require('./routes/auth');
 const healthProfileRoutes = require('./routes/healthProfile');
 const analyticsRoutes = require('./routes/analytics');
+const nutritionRoutes = require('./routes/nutrition'); // NEW: Nutrition routes
 
 // Initialize Express app
 const app = express();
@@ -128,6 +129,10 @@ app.use('/api/analytics/ai-insights', rateLimiters.aiInsights);
 app.use('/api/analytics', rateLimiters.api);
 app.use('/api/analytics', analyticsRoutes);
 
+// NEW: Nutrition Routes
+app.use('/api/nutrition', rateLimiters.api);
+app.use('/api/nutrition', nutritionRoutes);
+
 // Error logging endpoint (for frontend error boundary)
 app.post('/api/errors/log', express.json(), (req, res) => {
   const { message, stack, timestamp, userAgent, url } = req.body;
@@ -199,6 +204,17 @@ const server = app.listen(PORT, () => {
 📊 Environment: ${process.env.NODE_ENV || 'development'}
 🔒 Security Status: ENHANCED
 ✅ CORS: Allowing all origins in development mode
+🥗 Nutrition Platform: ACTIVE
+
+Available Endpoints:
+✓ Health Profile: /api/health-profile
+✓ Analytics: /api/analytics
+✓ Nutrition: /api/nutrition
+  - Preferences: GET/PUT /api/nutrition/preferences
+  - Sync: POST /api/nutrition/preferences/sync
+  - Recipes: GET /api/nutrition/recipes/search
+  - Ingredients: GET /api/nutrition/ingredients/search
+  - Init Data: POST /api/nutrition/init-data (dev only)
 
 Security Features Active:
 ✓ Rate Limiting (Auth: 5/15min, API: 100/min)
@@ -212,6 +228,16 @@ Security Features Active:
 ✓ Session Security
 ${process.env.NODE_ENV === 'production' ? '✓ HTTPS Enforcement' : '⚠️  HTTPS not enforced (development mode)'}
 
+Nutrition Features:
+✓ 15+ Dietary Preferences
+✓ 10+ Allergy Options
+✓ Auto-sync with Health Profile
+✓ 500+ Recipes Database
+✓ 500+ Ingredients Database
+✓ Timezone Support (ISO 8601)
+✓ Nutritional Calculations
+✓ RAG-ready embeddings
+
 Rate Limits:
 - Authentication: 5 attempts per 15 minutes
 - Password Reset: 3 attempts per hour
@@ -219,6 +245,9 @@ Rate Limits:
 - AI Insights: 10 per hour
 - Data Export: 5 per hour
 - Profile Updates: 20 per 5 minutes
+
+To initialize nutrition data (after login):
+POST http://localhost:${PORT}/api/nutrition/init-data
 
 Testing Registration:
 1. Go to http://localhost:3000/register

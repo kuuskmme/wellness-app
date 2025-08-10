@@ -1,4 +1,4 @@
-// src/pages/VerifyEmailPage.js - Email Verification Page
+// src/pages/VerifyEmailPage.js - Fixed Email Verification Page with Token Storage
 import React, { useState, useEffect } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
@@ -26,6 +26,21 @@ const VerifyEmailPage = () => {
     if (result.success) {
       setStatus('success');
       setMessage(result.message);
+      
+      // IMPORTANT: Store the tokens properly
+      if (result.tokens) {
+        localStorage.setItem('token', result.tokens.accessToken);
+        localStorage.setItem('accessToken', result.tokens.accessToken);
+        localStorage.setItem('refreshToken', result.tokens.refreshToken);
+        
+        // Also store user info if provided
+        if (result.user) {
+          localStorage.setItem('user', JSON.stringify(result.user));
+        }
+        
+        console.log('✅ Tokens stored successfully!');
+        console.log('Access Token:', result.tokens.accessToken);
+      }
       
       // Redirect to dashboard after 3 seconds
       setTimeout(() => {
