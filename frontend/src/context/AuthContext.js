@@ -1,16 +1,8 @@
-// frontend/src/context/AuthContext.js - Complete Updated File with Fixed Axios
-import React, { createContext, useState, useContext, useEffect, useCallback } from 'react';
+// context/AuthContext.js - Fixed Authentication Context with Proper Token Storage
+import React, { createContext, useState, useContext, useEffect } from 'react';
 import axios from 'axios';
 
-const AuthContext = createContext({});
-
-// Configure axios defaults - FIXED FOR CORS
-axios.defaults.baseURL = 'http://localhost:5000';
-axios.defaults.headers.common['Content-Type'] = 'application/json';
-axios.defaults.withCredentials = true; // Important for CORS with credentials
-
-// Token refresh interval (14 minutes - just before 15 min expiry)
-const TOKEN_REFRESH_INTERVAL = 14 * 60 * 1000;
+const AuthContext = createContext();
 
 export const useAuth = () => {
   const context = useContext(AuthContext);
@@ -20,6 +12,10 @@ export const useAuth = () => {
   return context;
 };
 
+// Set axios defaults
+axios.defaults.baseURL = process.env.REACT_APP_API_URL || 'http://localhost:5000';
+axios.defaults.headers.common['Content-Type'] = 'application/json';
+
 export const AuthProvider = ({ children }) => {
   const [user, setUser] = useState(null);
   const [accessToken, setAccessToken] = useState(null);
@@ -27,90 +23,35 @@ export const AuthProvider = ({ children }) => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
 
-  // Load tokens from localStorage on mount
+  // Load stored auth data on mount
   useEffect(() => {
     const storedUser = localStorage.getItem('user');
-    const storedAccessToken = localStorage.getItem('accessToken');
+    const storedAccessToken = localStorage.getItem('token') || localStorage.getItem('accessToken');
     const storedRefreshToken = localStorage.getItem('refreshToken');
 
     if (storedUser && storedAccessToken) {
-      setUser(JSON.parse(storedUser));
-      setAccessToken(storedAccessToken);
-      setRefreshToken(storedRefreshToken);
-      
-      // Set axios default header
-      axios.defaults.headers.common['Authorization'] = `Bearer ${storedAccessToken}`;
-      
-      // Verify token is still valid
-      verifyToken(storedAccessToken);
+      try {
+        setUser(JSON.parse(storedUser));
+        setAccessToken(storedAccessToken);
+        setRefreshToken(storedRefreshToken);
+        
+        // Set default auth header
+        axios.defaults.headers.common['Authorization'] = `Bearer ${storedAccessToken}`;
+      } catch (error) {
+        console.error('Error parsing stored user data:', error);
+        // Clear corrupted data
+        localStorage.removeItem('user');
+        localStorage.removeItem('token');
+        localStorage.removeItem('accessToken');
+        localStorage.removeItem('refreshToken');
+      }
     }
+    
     setLoading(false);
   }, []);
 
-  // Verify token validity
-  const verifyToken = async (token) => {
-    try {
-      const response = await axios.get('/api/auth/verify-token', {
-        headers: { Authorization: `Bearer ${token}` }
-      });
-      
-      if (!response.data.valid) {
-        // Token invalid, try refresh
-        if (refreshToken) {
-          await refreshAccessToken();
-        } else {
-          logout();
-        }
-      }
-    } catch (error) {
-      console.error('Token verification failed:', error);
-      if (refreshToken) {
-        await refreshAccessToken();
-      } else {
-        logout();
-      }
-    }
-  };
-
-  // Refresh access token
-  const refreshAccessToken = useCallback(async () => {
-    if (!refreshToken) {
-      logout();
-      return null;
-    }
-
-    try {
-      const response = await axios.post('/api/auth/refresh-token', {
-        refreshToken: refreshToken
-      });
-
-      const newAccessToken = response.data.accessToken;
-      
-      setAccessToken(newAccessToken);
-      localStorage.setItem('accessToken', newAccessToken);
-      axios.defaults.headers.common['Authorization'] = `Bearer ${newAccessToken}`;
-      
-      return newAccessToken;
-    } catch (error) {
-      console.error('Token refresh failed:', error);
-      logout();
-      return null;
-    }
-  }, [refreshToken]);
-
-  // Setup automatic token refresh
-  useEffect(() => {
-    if (!accessToken || !refreshToken) return;
-
-    const interval = setInterval(() => {
-      refreshAccessToken();
-    }, TOKEN_REFRESH_INTERVAL);
-
-    return () => clearInterval(interval);
-  }, [accessToken, refreshToken, refreshAccessToken]);
-
-  // Register function - UPDATED
-  const register = async (email, password, dataConsent = true) => {
+  // Register function
+  const register = async (email, password, name) => {
     try {
       setError(null);
       console.log('Registering user:', email);
@@ -118,25 +59,16 @@ export const AuthProvider = ({ children }) => {
       const response = await axios.post('/api/auth/register', {
         email,
         password,
-        dataConsent
+        name
       });
-      
+
       console.log('Registration response:', response.data);
-      
-      // Log verification info if available
-      if (response.data.verificationToken) {
-        console.log('\n📧 VERIFICATION INFO:');
-        console.log('Token:', response.data.verificationToken);
-        console.log('URL:', response.data.verificationUrl);
-      }
       
       return {
         success: true,
         message: response.data.message,
         userId: response.data.userId,
-        emailSent: response.data.emailSent,
-        verificationToken: response.data.verificationToken,
-        verificationUrl: response.data.verificationUrl
+        emailSent: response.data.emailSent
       };
     } catch (error) {
       console.error('Registration error:', error);
@@ -150,7 +82,7 @@ export const AuthProvider = ({ children }) => {
     }
   };
 
-  // Login function - UPDATED
+  // Login function - FIXED WITH PROPER TOKEN STORAGE
   const login = async (email, password, twoFactorCode = null) => {
     try {
       setError(null);
@@ -161,7 +93,6 @@ export const AuthProvider = ({ children }) => {
         password
       };
       
-      // Only add twoFactorCode if provided
       if (twoFactorCode && twoFactorCode.length === 6) {
         requestBody.twoFactorCode = twoFactorCode;
       }
@@ -184,13 +115,16 @@ export const AuthProvider = ({ children }) => {
       setAccessToken(tokens.accessToken);
       setRefreshToken(tokens.refreshToken);
       
+      // IMPORTANT: Store with both 'token' and 'accessToken' for compatibility
       localStorage.setItem('user', JSON.stringify(user));
+      localStorage.setItem('token', tokens.accessToken); // For backward compatibility
       localStorage.setItem('accessToken', tokens.accessToken);
       localStorage.setItem('refreshToken', tokens.refreshToken);
       
+      // Set axios default header
       axios.defaults.headers.common['Authorization'] = `Bearer ${tokens.accessToken}`;
       
-      console.log('Login successful!');
+      console.log('✅ Login successful! Token stored as:', tokens.accessToken);
       
       return {
         success: true,
@@ -201,10 +135,19 @@ export const AuthProvider = ({ children }) => {
       console.error('Login error:', error);
       const message = error.response?.data?.message || 'Login failed';
       setError(message);
+      
+      // Check if email needs verification
+      if (error.response?.status === 403 && error.response?.data?.needsVerification) {
+        return {
+          success: false,
+          message,
+          needsVerification: true
+        };
+      }
+      
       return {
         success: false,
-        message,
-        needsVerification: error.response?.data?.needsVerification
+        message
       };
     }
   };
@@ -226,7 +169,9 @@ export const AuthProvider = ({ children }) => {
       setAccessToken(null);
       setRefreshToken(null);
       
+      // Clear all possible token keys
       localStorage.removeItem('user');
+      localStorage.removeItem('token');
       localStorage.removeItem('accessToken');
       localStorage.removeItem('refreshToken');
       
@@ -236,17 +181,17 @@ export const AuthProvider = ({ children }) => {
     }
   };
 
-  // Verify email - UPDATED
-  const verifyEmail = async (token) => {
+  // Verify email
+  const verifyEmail = async (verificationToken) => {
     try {
       setError(null);
-      console.log('Verifying email with token:', token);
+      console.log('Verifying email with token:', verificationToken);
       
-      const response = await axios.get(`/api/auth/verify/${token}`);
+      const response = await axios.get(`/api/auth/verify/${verificationToken}`);
       
       console.log('Verification response:', response.data);
       
-      // Auto-login after verification
+      // Auto-login after verification if tokens are provided
       const { tokens, user } = response.data;
       
       if (tokens && user) {
@@ -254,16 +199,22 @@ export const AuthProvider = ({ children }) => {
         setAccessToken(tokens.accessToken);
         setRefreshToken(tokens.refreshToken);
         
+        // Store with both keys for compatibility
         localStorage.setItem('user', JSON.stringify(user));
+        localStorage.setItem('token', tokens.accessToken);
         localStorage.setItem('accessToken', tokens.accessToken);
         localStorage.setItem('refreshToken', tokens.refreshToken);
         
         axios.defaults.headers.common['Authorization'] = `Bearer ${tokens.accessToken}`;
+        
+        console.log('✅ Email verified and logged in!');
       }
       
       return {
         success: true,
-        message: response.data.message
+        message: response.data.message,
+        tokens,
+        user
       };
     } catch (error) {
       console.error('Verification error:', error);
@@ -276,21 +227,74 @@ export const AuthProvider = ({ children }) => {
     }
   };
 
-  // Resend verification email
-  const resendVerification = async (email) => {
+  // Refresh access token
+  const refreshAccessToken = async () => {
     try {
-      const response = await axios.post('/api/auth/resend-verification', { email });
-      return {
-        success: true,
-        message: response.data.message
-      };
+      const storedRefreshToken = refreshToken || localStorage.getItem('refreshToken');
+      
+      if (!storedRefreshToken) {
+        throw new Error('No refresh token available');
+      }
+
+      const response = await axios.post('/api/auth/refresh-token', {
+        refreshToken: storedRefreshToken
+      });
+
+      const newAccessToken = response.data.accessToken;
+      
+      setAccessToken(newAccessToken);
+      
+      // Store with both keys
+      localStorage.setItem('token', newAccessToken);
+      localStorage.setItem('accessToken', newAccessToken);
+      
+      axios.defaults.headers.common['Authorization'] = `Bearer ${newAccessToken}`;
+      
+      console.log('✅ Token refreshed successfully');
+      
+      return newAccessToken;
     } catch (error) {
-      return {
-        success: false,
-        message: error.response?.data?.message || 'Failed to resend verification'
-      };
+      console.error('Token refresh error:', error);
+      // If refresh fails, logout
+      await logout();
+      return null;
     }
   };
+
+  // Setup axios interceptor for token refresh with loop prevention
+  useEffect(() => {
+    const interceptor = axios.interceptors.response.use(
+      (response) => response,
+      async (error) => {
+        const originalRequest = error.config;
+        
+        // Prevent infinite loops - don't retry auth endpoints
+        const isAuthEndpoint = originalRequest.url?.includes('/auth/');
+        
+        if (error.response?.status === 401 && !originalRequest._retry && !isAuthEndpoint) {
+          originalRequest._retry = true;
+          
+          try {
+            const newToken = await refreshAccessToken();
+            
+            if (newToken) {
+              originalRequest.headers['Authorization'] = `Bearer ${newToken}`;
+              return axios(originalRequest);
+            }
+          } catch (refreshError) {
+            // Don't retry if refresh fails
+            return Promise.reject(error);
+          }
+        }
+        
+        return Promise.reject(error);
+      }
+    );
+
+    return () => {
+      axios.interceptors.response.eject(interceptor);
+    };
+  }, []);
 
   // Request password reset
   const requestPasswordReset = async (email) => {
@@ -311,10 +315,7 @@ export const AuthProvider = ({ children }) => {
   // Reset password
   const resetPassword = async (token, password) => {
     try {
-      const response = await axios.post('/api/auth/reset-password', {
-        token,
-        password
-      });
+      const response = await axios.post(`/api/auth/reset-password/${token}`, { password });
       return {
         success: true,
         message: response.data.message
@@ -322,43 +323,15 @@ export const AuthProvider = ({ children }) => {
     } catch (error) {
       return {
         success: false,
-        message: error.response?.data?.message || 'Failed to reset password',
-        errors: error.response?.data?.errors
+        message: error.response?.data?.message || 'Failed to reset password'
       };
     }
   };
 
-  // Setup 2FA
-  const setup2FA = async () => {
+  // Resend verification email
+  const resendVerification = async (email) => {
     try {
-      const response = await axios.post('/api/auth/2fa/setup', {}, {
-        headers: { Authorization: `Bearer ${accessToken}` }
-      });
-      return {
-        success: true,
-        qrCode: response.data.qrCode,
-        secret: response.data.secret,
-        backupCodes: response.data.backupCodes
-      };
-    } catch (error) {
-      return {
-        success: false,
-        message: error.response?.data?.message || 'Failed to setup 2FA'
-      };
-    }
-  };
-
-  // Verify 2FA setup
-  const verify2FA = async (code) => {
-    try {
-      const response = await axios.post('/api/auth/2fa/verify', { code }, {
-        headers: { Authorization: `Bearer ${accessToken}` }
-      });
-      
-      // Update user state
-      setUser(prev => ({ ...prev, twoFactorEnabled: true }));
-      localStorage.setItem('user', JSON.stringify({ ...user, twoFactorEnabled: true }));
-      
+      const response = await axios.post('/api/auth/resend-verification', { email });
       return {
         success: true,
         message: response.data.message
@@ -366,67 +339,8 @@ export const AuthProvider = ({ children }) => {
     } catch (error) {
       return {
         success: false,
-        message: error.response?.data?.message || 'Invalid verification code'
+        message: error.response?.data?.message || 'Failed to resend verification'
       };
-    }
-  };
-
-  // Disable 2FA
-  const disable2FA = async (password) => {
-    try {
-      const response = await axios.post('/api/auth/2fa/disable', { password }, {
-        headers: { Authorization: `Bearer ${accessToken}` }
-      });
-      
-      // Update user state
-      setUser(prev => ({ ...prev, twoFactorEnabled: false }));
-      localStorage.setItem('user', JSON.stringify({ ...user, twoFactorEnabled: false }));
-      
-      return {
-        success: true,
-        message: response.data.message
-      };
-    } catch (error) {
-      return {
-        success: false,
-        message: error.response?.data?.message || 'Failed to disable 2FA'
-      };
-    }
-  };
-
-  // Make authenticated API request
-  const apiRequest = async (method, url, data = null) => {
-    try {
-      const config = {
-        method,
-        url,
-        headers: { Authorization: `Bearer ${accessToken}` }
-      };
-      
-      if (data) {
-        config.data = data;
-      }
-      
-      const response = await axios(config);
-      return response.data;
-    } catch (error) {
-      if (error.response?.status === 401 && error.response?.data?.code === 'TOKEN_EXPIRED') {
-        // Try to refresh token
-        const newToken = await refreshAccessToken();
-        if (newToken) {
-          // Retry the request with new token
-          const config = {
-            method,
-            url,
-            headers: { Authorization: `Bearer ${newToken}` }
-          };
-          if (data) config.data = data;
-          
-          const response = await axios(config);
-          return response.data;
-        }
-      }
-      throw error;
     }
   };
 
@@ -438,7 +352,6 @@ export const AuthProvider = ({ children }) => {
     error,
     isAuthenticated: !!user && !!accessToken,
     isVerified: user?.isVerified,
-    has2FA: user?.twoFactorEnabled,
     register,
     login,
     logout,
@@ -446,11 +359,7 @@ export const AuthProvider = ({ children }) => {
     resendVerification,
     requestPasswordReset,
     resetPassword,
-    setup2FA,
-    verify2FA,
-    disable2FA,
-    refreshAccessToken,
-    apiRequest
+    refreshAccessToken
   };
 
   return (

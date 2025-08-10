@@ -102,7 +102,7 @@ app.use('/api/nutrition/recipes/generate', aiLimiter);
 
 // Initialize Passport
 app.use(passport.initialize());
-require('./config/passport')(passport);
+require('./config/passport');
 
 // MongoDB connection with retry logic
 const connectDB = async () => {

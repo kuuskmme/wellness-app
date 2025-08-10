@@ -7,7 +7,7 @@ const User = require('../models/User');
 // JWT Strategy (always enabled)
 passport.use(new JwtStrategy({
   jwtFromRequest: ExtractJwt.fromAuthHeaderAsBearerToken(),
-  secretOrKey: process.env.JWT_SECRET
+  secretOrKey: process.env.JWT_SECRET || 'your-secret-key-change-this'
 }, async (payload, done) => {
   try {
     const user = await User.findById(payload.userId);
@@ -75,7 +75,9 @@ if (process.env.GITHUB_CLIENT_ID && process.env.GITHUB_CLIENT_SECRET) {
   }, async (accessToken, refreshToken, profile, done) => {
     try {
       // GitHub might not provide email
-      const email = profile.emails && profile.emails[0] ? profile.emails[0].value : `${profile.username}@github.local`;
+      const email = profile.emails && profile.emails[0] ? 
+        profile.emails[0].value : 
+        `${profile.username}@github.local`;
       
       let user = await User.findOne({ 
         $or: [
