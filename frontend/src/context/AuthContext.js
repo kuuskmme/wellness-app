@@ -1,88 +1,129 @@
-// context/AuthContext.js - Fixed Authentication Context with Proper Token Storage
+// src/context/AuthContext.js - Complete Authentication Context with 2FA Support
 import React, { createContext, useState, useContext, useEffect } from 'react';
 import axios from 'axios';
 
-const AuthContext = createContext();
+const AuthContext = createContext(null);
 
-export const useAuth = () => {
-  const context = useContext(AuthContext);
-  if (!context) {
-    throw new Error('useAuth must be used within AuthProvider');
-  }
-  return context;
-};
-
-// Set axios defaults
+// Configure axios defaults
 axios.defaults.baseURL = process.env.REACT_APP_API_URL || 'http://localhost:5000';
 axios.defaults.headers.common['Content-Type'] = 'application/json';
 
-export const AuthProvider = ({ children }) => {
-  const [user, setUser] = useState(null);
-  const [accessToken, setAccessToken] = useState(null);
-  const [refreshToken, setRefreshToken] = useState(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState(null);
-
-  // Load stored auth data on mount
-  useEffect(() => {
-    const storedUser = localStorage.getItem('user');
-    const storedAccessToken = localStorage.getItem('token') || localStorage.getItem('accessToken');
-    const storedRefreshToken = localStorage.getItem('refreshToken');
-
-    if (storedUser && storedAccessToken) {
+// Add axios interceptor for token refresh
+axios.interceptors.response.use(
+  (response) => response,
+  async (error) => {
+    const originalRequest = error.config;
+    
+    if (error.response?.status === 401 && !originalRequest._retry) {
+      originalRequest._retry = true;
+      
       try {
-        setUser(JSON.parse(storedUser));
-        setAccessToken(storedAccessToken);
-        setRefreshToken(storedRefreshToken);
-        
-        // Set default auth header
-        axios.defaults.headers.common['Authorization'] = `Bearer ${storedAccessToken}`;
-      } catch (error) {
-        console.error('Error parsing stored user data:', error);
-        // Clear corrupted data
-        localStorage.removeItem('user');
-        localStorage.removeItem('token');
-        localStorage.removeItem('accessToken');
-        localStorage.removeItem('refreshToken');
+        const refreshToken = localStorage.getItem('refreshToken');
+        if (refreshToken) {
+          const response = await axios.post('/api/auth/refresh-token', { refreshToken });
+          const { accessToken } = response.data;
+          
+          localStorage.setItem('token', accessToken);
+          localStorage.setItem('accessToken', accessToken);
+          axios.defaults.headers.common['Authorization'] = `Bearer ${accessToken}`;
+          originalRequest.headers['Authorization'] = `Bearer ${accessToken}`;
+          
+          return axios(originalRequest);
+        }
+      } catch (refreshError) {
+        console.error('Token refresh failed:', refreshError);
+        // Clear auth and redirect to login
+        localStorage.clear();
+        window.location.href = '/login';
       }
     }
     
-    setLoading(false);
+    return Promise.reject(error);
+  }
+);
+
+export const AuthProvider = ({ children }) => {
+  const [user, setUser] = useState(null);
+  const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [isVerified, setIsVerified] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+  const [accessToken, setAccessToken] = useState(null);
+  const [refreshToken, setRefreshToken] = useState(null);
+
+  useEffect(() => {
+    checkAuthStatus();
   }, []);
 
-  // Register function
-  const register = async (email, password, name) => {
+  const checkAuthStatus = async () => {
+    try {
+      const token = localStorage.getItem('token') || localStorage.getItem('accessToken');
+      const refreshToken = localStorage.getItem('refreshToken');
+      
+      if (!token) {
+        setLoading(false);
+        return;
+      }
+
+      // Set the authorization header
+      axios.defaults.headers.common['Authorization'] = `Bearer ${token}`;
+      
+      // Verify token with backend
+      const response = await axios.get('/api/auth/verify-token');
+      
+      if (response.data.valid) {
+        setIsAuthenticated(true);
+        setAccessToken(token);
+        setRefreshToken(refreshToken);
+        
+        // Fetch user details
+        const userResponse = await axios.get('/api/auth/me');
+        if (userResponse.data.user) {
+          setUser(userResponse.data.user);
+          setIsVerified(userResponse.data.user.isVerified);
+        }
+      }
+    } catch (error) {
+      console.error('Auth check failed:', error);
+      // Clear invalid tokens
+      localStorage.removeItem('token');
+      localStorage.removeItem('accessToken');
+      localStorage.removeItem('refreshToken');
+      delete axios.defaults.headers.common['Authorization'];
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const register = async (email, password) => {
     try {
       setError(null);
       console.log('Registering user:', email);
-      
+
       const response = await axios.post('/api/auth/register', {
         email,
-        password,
-        name
+        password
       });
 
       console.log('Registration response:', response.data);
-      
+
+      // Registration successful, but email verification needed
       return {
         success: true,
         message: response.data.message,
-        userId: response.data.userId,
-        emailSent: response.data.emailSent
+        requiresVerification: true
       };
     } catch (error) {
       console.error('Registration error:', error);
-      const message = error.response?.data?.message || 'Registration failed';
-      setError(message);
+      const errorMessage = error.response?.data?.message || 'Registration failed';
+      setError(errorMessage);
       return {
         success: false,
-        message,
-        errors: error.response?.data?.errors
+        message: errorMessage
       };
     }
   };
 
-  // Login function - FIXED WITH PROPER TOKEN STORAGE
   const login = async (email, password, twoFactorCode = null) => {
     try {
       setError(null);
@@ -124,249 +165,265 @@ export const AuthProvider = ({ children }) => {
       // Set axios default header
       axios.defaults.headers.common['Authorization'] = `Bearer ${tokens.accessToken}`;
       
-      console.log('✅ Login successful! Token stored as:', tokens.accessToken);
-      
+      console.log('✅ Login successful!');
+      setIsAuthenticated(true);
+      setIsVerified(user.isVerified);
+
       return {
         success: true,
-        message: response.data.message,
-        user
+        message: 'Login successful'
       };
     } catch (error) {
       console.error('Login error:', error);
-      const message = error.response?.data?.message || 'Login failed';
-      setError(message);
-      
-      // Check if email needs verification
-      if (error.response?.status === 403 && error.response?.data?.needsVerification) {
-        return {
-          success: false,
-          message,
-          needsVerification: true
-        };
-      }
-      
+      const errorMessage = error.response?.data?.message || 'Login failed';
+      setError(errorMessage);
       return {
         success: false,
-        message
+        message: errorMessage
       };
     }
   };
 
-  // Logout function
   const logout = async () => {
     try {
-      // Call logout endpoint to invalidate refresh token
+      const refreshToken = localStorage.getItem('refreshToken');
+      
+      // Call logout endpoint if we have a refresh token
       if (refreshToken) {
         await axios.post('/api/auth/logout', { refreshToken }, {
-          headers: { Authorization: `Bearer ${accessToken}` }
-        });
+          headers: { Authorization: `Bearer ${localStorage.getItem('token')}` }
+        }).catch(err => console.error('Logout API error:', err));
       }
     } catch (error) {
       console.error('Logout error:', error);
     } finally {
-      // Clear local state and storage
+      // Clear all auth data
       setUser(null);
+      setIsAuthenticated(false);
+      setIsVerified(false);
       setAccessToken(null);
       setRefreshToken(null);
       
-      // Clear all possible token keys
+      // Clear localStorage
       localStorage.removeItem('user');
       localStorage.removeItem('token');
       localStorage.removeItem('accessToken');
       localStorage.removeItem('refreshToken');
       
+      // Clear axios header
       delete axios.defaults.headers.common['Authorization'];
       
-      console.log('Logged out successfully');
+      console.log('✅ Logged out successfully');
     }
   };
 
-  // Verify email
-  const verifyEmail = async (verificationToken) => {
+  const setup2FA = async () => {
+    try {
+      const token = localStorage.getItem('token');
+      const response = await axios.post('/api/auth/2fa/setup', {}, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      
+      return {
+        success: true,
+        qrCode: response.data.qrCode,
+        secret: response.data.secret,
+        message: response.data.message
+      };
+    } catch (error) {
+      console.error('2FA setup error:', error);
+      return {
+        success: false,
+        message: error.response?.data?.message || 'Failed to setup 2FA'
+      };
+    }
+  };
+
+  const verify2FA = async (code) => {
+    try {
+      const token = localStorage.getItem('token');
+      const response = await axios.post('/api/auth/2fa/verify', 
+        { code },
+        { headers: { Authorization: `Bearer ${token}` }}
+      );
+      
+      // Update user state to reflect 2FA is enabled
+      setUser(prev => ({ ...prev, twoFactorEnabled: true }));
+      
+      return {
+        success: true,
+        message: response.data.message
+      };
+    } catch (error) {
+      console.error('2FA verification error:', error);
+      return {
+        success: false,
+        message: error.response?.data?.message || 'Invalid verification code'
+      };
+    }
+  };
+
+  const disable2FA = async (password) => {
+    try {
+      const token = localStorage.getItem('token');
+      const response = await axios.post('/api/auth/2fa/disable', 
+        { password },
+        { headers: { Authorization: `Bearer ${token}` }}
+      );
+      
+      // Update user state to reflect 2FA is disabled
+      setUser(prev => ({ ...prev, twoFactorEnabled: false }));
+      
+      return {
+        success: true,
+        message: response.data.message
+      };
+    } catch (error) {
+      console.error('2FA disable error:', error);
+      return {
+        success: false,
+        message: error.response?.data?.message || 'Failed to disable 2FA'
+      };
+    }
+  };
+
+  const forgotPassword = async (email) => {
     try {
       setError(null);
-      console.log('Verifying email with token:', verificationToken);
+      const response = await axios.post('/api/auth/forgot-password', { email });
       
-      const response = await axios.get(`/api/auth/verify/${verificationToken}`);
+      return {
+        success: true,
+        message: response.data.message
+      };
+    } catch (error) {
+      console.error('Forgot password error:', error);
+      const errorMessage = error.response?.data?.message || 'Failed to send reset email';
+      setError(errorMessage);
+      return {
+        success: false,
+        message: errorMessage
+      };
+    }
+  };
+
+  const resetPassword = async (token, password) => {
+    try {
+      setError(null);
+      const response = await axios.post('/api/auth/reset-password', {
+        token,
+        password
+      });
       
-      console.log('Verification response:', response.data);
+      return {
+        success: true,
+        message: response.data.message
+      };
+    } catch (error) {
+      console.error('Reset password error:', error);
+      const errorMessage = error.response?.data?.message || 'Failed to reset password';
+      setError(errorMessage);
+      return {
+        success: false,
+        message: errorMessage
+      };
+    }
+  };
+
+  const verifyEmail = async (token) => {
+    try {
+      setError(null);
+      const response = await axios.get(`/api/auth/verify/${token}`);
       
-      // Auto-login after verification if tokens are provided
-      const { tokens, user } = response.data;
-      
-      if (tokens && user) {
+      if (response.data.tokens) {
+        // Auto-login after verification
+        const { tokens, user } = response.data;
+        
         setUser(user);
         setAccessToken(tokens.accessToken);
         setRefreshToken(tokens.refreshToken);
+        setIsAuthenticated(true);
+        setIsVerified(true);
         
-        // Store with both keys for compatibility
         localStorage.setItem('user', JSON.stringify(user));
         localStorage.setItem('token', tokens.accessToken);
         localStorage.setItem('accessToken', tokens.accessToken);
         localStorage.setItem('refreshToken', tokens.refreshToken);
         
         axios.defaults.headers.common['Authorization'] = `Bearer ${tokens.accessToken}`;
-        
-        console.log('✅ Email verified and logged in!');
       }
       
       return {
         success: true,
-        message: response.data.message,
-        tokens,
-        user
+        message: response.data.message
       };
     } catch (error) {
-      console.error('Verification error:', error);
-      const message = error.response?.data?.message || 'Verification failed';
-      setError(message);
+      console.error('Email verification error:', error);
+      const errorMessage = error.response?.data?.message || 'Verification failed';
+      setError(errorMessage);
       return {
         success: false,
-        message
+        message: errorMessage
       };
     }
   };
 
-  // Refresh access token
   const refreshAccessToken = async () => {
     try {
-      const storedRefreshToken = refreshToken || localStorage.getItem('refreshToken');
+      const refreshToken = localStorage.getItem('refreshToken');
       
-      if (!storedRefreshToken) {
+      if (!refreshToken) {
         throw new Error('No refresh token available');
       }
 
-      const response = await axios.post('/api/auth/refresh-token', {
-        refreshToken: storedRefreshToken
-      });
-
-      const newAccessToken = response.data.accessToken;
+      const response = await axios.post('/api/auth/refresh-token', { refreshToken });
+      const { accessToken } = response.data;
       
-      setAccessToken(newAccessToken);
+      setAccessToken(accessToken);
+      localStorage.setItem('token', accessToken);
+      localStorage.setItem('accessToken', accessToken);
+      axios.defaults.headers.common['Authorization'] = `Bearer ${accessToken}`;
       
-      // Store with both keys
-      localStorage.setItem('token', newAccessToken);
-      localStorage.setItem('accessToken', newAccessToken);
-      
-      axios.defaults.headers.common['Authorization'] = `Bearer ${newAccessToken}`;
-      
-      console.log('✅ Token refreshed successfully');
-      
-      return newAccessToken;
+      return accessToken;
     } catch (error) {
-      console.error('Token refresh error:', error);
-      // If refresh fails, logout
+      console.error('Token refresh failed:', error);
+      // Force logout if refresh fails
       await logout();
-      return null;
-    }
-  };
-
-  // Setup axios interceptor for token refresh with loop prevention
-  useEffect(() => {
-    const interceptor = axios.interceptors.response.use(
-      (response) => response,
-      async (error) => {
-        const originalRequest = error.config;
-        
-        // Prevent infinite loops - don't retry auth endpoints
-        const isAuthEndpoint = originalRequest.url?.includes('/auth/');
-        
-        if (error.response?.status === 401 && !originalRequest._retry && !isAuthEndpoint) {
-          originalRequest._retry = true;
-          
-          try {
-            const newToken = await refreshAccessToken();
-            
-            if (newToken) {
-              originalRequest.headers['Authorization'] = `Bearer ${newToken}`;
-              return axios(originalRequest);
-            }
-          } catch (refreshError) {
-            // Don't retry if refresh fails
-            return Promise.reject(error);
-          }
-        }
-        
-        return Promise.reject(error);
-      }
-    );
-
-    return () => {
-      axios.interceptors.response.eject(interceptor);
-    };
-  }, []);
-
-  // Request password reset
-  const requestPasswordReset = async (email) => {
-    try {
-      const response = await axios.post('/api/auth/forgot-password', { email });
-      return {
-        success: true,
-        message: response.data.message
-      };
-    } catch (error) {
-      return {
-        success: false,
-        message: error.response?.data?.message || 'Failed to request password reset'
-      };
-    }
-  };
-
-  // Reset password
-  const resetPassword = async (token, password) => {
-    try {
-      const response = await axios.post(`/api/auth/reset-password/${token}`, { password });
-      return {
-        success: true,
-        message: response.data.message
-      };
-    } catch (error) {
-      return {
-        success: false,
-        message: error.response?.data?.message || 'Failed to reset password'
-      };
-    }
-  };
-
-  // Resend verification email
-  const resendVerification = async (email) => {
-    try {
-      const response = await axios.post('/api/auth/resend-verification', { email });
-      return {
-        success: true,
-        message: response.data.message
-      };
-    } catch (error) {
-      return {
-        success: false,
-        message: error.response?.data?.message || 'Failed to resend verification'
-      };
+      throw error;
     }
   };
 
   const value = {
     user,
-    accessToken,
-    refreshToken,
+    isAuthenticated,
+    isVerified,
     loading,
     error,
-    isAuthenticated: !!user && !!accessToken,
-    isVerified: user?.isVerified,
+    setError,
+    accessToken,
+    refreshToken,
     register,
     login,
     logout,
-    verifyEmail,
-    resendVerification,
-    requestPasswordReset,
+    setup2FA,
+    verify2FA,
+    disable2FA,
+    forgotPassword,
     resetPassword,
-    refreshAccessToken
+    verifyEmail,
+    refreshAccessToken,
+    checkAuthStatus
   };
 
-  return (
-    <AuthContext.Provider value={value}>
-      {children}
-    </AuthContext.Provider>
-  );
+  return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
+};
+
+export const useAuth = () => {
+  const context = useContext(AuthContext);
+  if (!context) {
+    throw new Error('useAuth must be used within an AuthProvider');
+  }
+  return context;
 };
 
 export default AuthContext;
