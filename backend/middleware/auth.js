@@ -1,4 +1,4 @@
-// middleware/auth.js - Complete authentication middleware for Step 3
+
 const jwt = require('jsonwebtoken');
 const User = require('../models/User');
 const rateLimit = require('express-rate-limit');

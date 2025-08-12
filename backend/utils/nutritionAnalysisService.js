@@ -1,4 +1,4 @@
-// utils/nutritionAnalysisService.js - Comprehensive nutritional analysis
+
 const OpenAI = require('openai');
 const MealPlan = require('../models/MealPlan');
 const UserPreferences = require('../models/UserPreferences');

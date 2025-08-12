@@ -1,4 +1,4 @@
-// backend/utils/email.js - Complete Updated File with Console Fallback
+
 const nodemailer = require('nodemailer');
 
 // Email templates

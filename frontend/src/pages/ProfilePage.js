@@ -1,4 +1,4 @@
-// src/pages/ProfilePage.js - Complete Profile page with 2FA Security Section
+
 import React, { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
 import axios from 'axios';

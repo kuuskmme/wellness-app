@@ -1,4 +1,4 @@
-// src/pages/VerifyPendingPage.js - Verification Pending Page
+
 import React, { useState } from 'react';
 import { useLocation, Link } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';

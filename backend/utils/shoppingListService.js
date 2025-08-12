@@ -1,4 +1,4 @@
-// utils/shoppingListService.js - Shopping list generation with categorization
+
 const MealPlan = require('../models/MealPlan');
 const Recipe = require('../models/Recipe');
 const Ingredient = require('../models/Ingredient');

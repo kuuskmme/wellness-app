@@ -1,4 +1,4 @@
-// pages/RecipeSearchPage.js - Recipe Search with RAG and Nutrition Visualization
+
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Search, Filter, Clock, Flame, ChefHat, Plus, RefreshCw, Zap, Edit3 } from 'lucide-react';

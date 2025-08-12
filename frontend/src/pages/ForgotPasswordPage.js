@@ -1,4 +1,4 @@
-// src/pages/ForgotPasswordPage.js - Forgot Password Page
+
 import React, { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';

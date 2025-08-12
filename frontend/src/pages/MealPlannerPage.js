@@ -1,4 +1,4 @@
-// pages/MealPlannerPage.js - Meal planning interface
+
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import moment from 'moment-timezone';

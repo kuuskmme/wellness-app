@@ -1,4 +1,4 @@
-// App.js - Main application with all routes including nutrition
+
 import React from 'react';
 import { BrowserRouter as Router, Routes, Route, Navigate, Link } from 'react-router-dom';
 import { AuthProvider, useAuth } from './context/AuthContext';

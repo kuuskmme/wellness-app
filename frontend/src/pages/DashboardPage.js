@@ -1,4 +1,4 @@
-// src/pages/DashboardPage.js - Complete Dashboard with Data Visualizations (Step 5)
+
 import React, { useState, useEffect, useContext } from 'react';
 import { Link } from 'react-router-dom';
 import axios from 'axios';

@@ -1,4 +1,4 @@
-// utils/jwt.js - JWT Token Generation and Management
+
 const jwt = require('jsonwebtoken');
 const crypto = require('crypto');
 

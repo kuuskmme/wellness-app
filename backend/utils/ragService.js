@@ -1,4 +1,4 @@
-// utils/ragService.js - RAG implementation for recipe generation
+
 const OpenAI = require('openai');
 const Recipe = require('../models/Recipe');
 const Ingredient = require('../models/Ingredient');

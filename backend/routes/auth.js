@@ -1,4 +1,4 @@
-// backend/routes/auth.js - Complete Updated File with Better Error Handling
+
 const express = require('express');
 const router = express.Router();
 const bcrypt = require('bcrypt');
@@ -334,6 +334,7 @@ router.post('/forgot-password', [
       return res.json({
         message: 'If an account exists with this email, you will receive a password reset link.'
       });
+      console.log('\n📧 PASSWORD RESET LINK:', resetUrl, '\n');
     }
 
     // Generate reset token

@@ -1,4 +1,4 @@
-// src/context/AuthContext.js - Complete Authentication Context with 2FA Support
+
 import React, { createContext, useState, useContext, useEffect } from 'react';
 import axios from 'axios';
 
@@ -409,6 +409,7 @@ export const AuthProvider = ({ children }) => {
     verify2FA,
     disable2FA,
     forgotPassword,
+    requestPasswordReset: forgotPassword,
     resetPassword,
     verifyEmail,
     refreshAccessToken,

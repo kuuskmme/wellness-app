@@ -1,4 +1,4 @@
-// utils/mealPlanningService.js - Sequential prompting for meal planning
+
 const OpenAI = require('openai');
 const Recipe = require('../models/Recipe');
 const UserPreferences = require('../models/UserPreferences');

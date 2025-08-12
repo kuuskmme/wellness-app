@@ -1,4 +1,4 @@
-// src/components/ErrorBoundary.js - Global Error Handler for Step 6
+
 import React from 'react';
 
 class ErrorBoundary extends React.Component {

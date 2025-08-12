@@ -1,4 +1,4 @@
-// src/pages/LoginPage.js - Updated Login page with JWT and 2FA
+
 import React, { useState, useEffect } from 'react';
 import { Link, useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';

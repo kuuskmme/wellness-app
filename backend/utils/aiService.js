@@ -1,4 +1,4 @@
-// utils/aiService.js - AI Service for generating health insights (Step 4)
+
 const axios = require('axios');
 
 class AIService {

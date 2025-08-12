@@ -1,4 +1,4 @@
-// src/pages/HomePage.js - Landing page
+
 import React from 'react';
 import { Link } from 'react-router-dom';
 

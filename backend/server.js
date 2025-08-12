@@ -1,4 +1,4 @@
-// server.js - Main server file with nutrition routes
+
 const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');

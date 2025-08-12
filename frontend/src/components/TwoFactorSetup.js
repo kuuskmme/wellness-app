@@ -1,4 +1,4 @@
-// src/components/TwoFactorSetup.js - Two-Factor Authentication Setup Component
+
 import React, { useState } from 'react';
 import { useAuth } from '../context/AuthContext';
 

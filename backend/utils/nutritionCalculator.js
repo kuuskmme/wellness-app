@@ -1,4 +1,4 @@
-// utils/nutritionCalculator.js - Function calling for accurate nutrition calculations
+
 const OpenAI = require('openai');
 const Ingredient = require('../models/Ingredient');
 const Recipe = require('../models/Recipe');

@@ -1,4 +1,4 @@
-// routes/healthProfile.js - Complete health profile routes with all Step 3 requirements
+
 const express = require('express');
 const router = express.Router();
 const { body, validationResult } = require('express-validator');
