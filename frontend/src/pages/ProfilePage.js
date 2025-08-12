@@ -1,4 +1,4 @@
-
+// src/pages/ProfilePage.js - Complete Profile page with 2FA Security Section
 import React, { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
 import axios from 'axios';
@@ -33,7 +33,7 @@ const ProfilePage = () => {
       secondary: [],
       targetWeight: { value: '', unit: 'kg' },
       targetDate: '',
-      motivationLevel: ''
+      motivationLevel: 5
     },
     initialFitnessAssessment: {
       weeklyActivityFrequency: '',
@@ -425,69 +425,95 @@ const ProfilePage = () => {
         );
 
       case 'lifestyle':
-        return (
-          <div className="space-y-4">
-            <h3 className="text-xl font-semibold mb-4">Lifestyle Indicators</h3>
-            <div className="grid md:grid-cols-2 gap-4">
-              <div>
-                <label className="block text-sm font-medium mb-2">Activity Level</label>
-                <select
-                  value={profile.lifestyleIndicators.activityLevel}
-                  onChange={(e) => handleInputChange('lifestyleIndicators', 'activityLevel', e.target.value)}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg"
-                >
-                  <option value="">Select activity level</option>
-                  <option value="sedentary">Sedentary (little to no exercise)</option>
-                  <option value="lightly-active">Lightly Active (1-3 days/week)</option>
-                  <option value="moderately-active">Moderately Active (3-5 days/week)</option>
-                  <option value="very-active">Very Active (6-7 days/week)</option>
-                  <option value="extra-active">Extra Active (physical job/2x daily)</option>
-                </select>
-              </div>
-              <div>
-                <label className="block text-sm font-medium mb-2">Sleep Hours</label>
-                <input
-                  type="number"
-                  value={profile.lifestyleIndicators.sleepHours}
-                  onChange={(e) => handleInputChange('lifestyleIndicators', 'sleepHours', e.target.value)}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg"
-                  placeholder="Average hours per night"
-                  min="0"
-                  max="24"
-                  step="0.5"
-                />
-              </div>
-              <div>
-                <label className="block text-sm font-medium mb-2">Stress Level</label>
-                <select
-                  value={profile.lifestyleIndicators.stressLevel}
-                  onChange={(e) => handleInputChange('lifestyleIndicators', 'stressLevel', e.target.value)}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg"
-                >
-                  <option value="">Select stress level</option>
-                  <option value="low">Low</option>
-                  <option value="moderate">Moderate</option>
-                  <option value="high">High</option>
-                  <option value="very-high">Very High</option>
-                </select>
-              </div>
-              <div>
-                <label className="block text-sm font-medium mb-2">Occupation Type</label>
-                <select
-                  value={profile.lifestyleIndicators.occupationType}
-                  onChange={(e) => handleInputChange('lifestyleIndicators', 'occupationType', e.target.value)}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg"
-                >
-                  <option value="">Select occupation type</option>
-                  <option value="sedentary">Sedentary (desk job)</option>
-                  <option value="light">Light Activity</option>
-                  <option value="moderate">Moderate Activity</option>
-                  <option value="heavy">Heavy Physical Work</option>
-                </select>
-              </div>
-            </div>
-          </div>
-        );
+  return (
+    <div className="space-y-4">
+      <h3 className="text-xl font-semibold mb-4">Lifestyle Indicators</h3>
+      <div className="grid md:grid-cols-2 gap-4">
+        <div>
+          <label className="block text-sm font-medium mb-2">Activity Level</label>
+          <select
+            value={profile.lifestyleIndicators.activityLevel}
+            onChange={(e) => handleInputChange('lifestyleIndicators', 'activityLevel', e.target.value)}
+            className="w-full px-3 py-2 border border-gray-300 rounded-lg"
+          >
+            <option value="">Select activity level</option>
+            <option value="sedentary">Sedentary (little to no exercise)</option>
+            <option value="lightly-active">Lightly Active (1-3 days/week)</option>
+            <option value="moderately-active">Moderately Active (3-5 days/week)</option>
+            <option value="very-active">Very Active (6-7 days/week)</option>
+            <option value="extra-active">Extra Active (physical job/2x daily)</option>
+          </select>
+        </div>
+        <div>
+          <label className="block text-sm font-medium mb-2">Sleep Hours</label>
+          <input
+            type="number"
+            value={profile.lifestyleIndicators.sleepHours}
+            onChange={(e) => handleInputChange('lifestyleIndicators', 'sleepHours', e.target.value)}
+            className="w-full px-3 py-2 border border-gray-300 rounded-lg"
+            placeholder="Average hours per night"
+            min="0"
+            max="24"
+            step="0.5"
+          />
+        </div>
+        <div>
+          <label className="block text-sm font-medium mb-2">Stress Level (1-10)</label>
+          <input
+            type="number"
+            value={profile.lifestyleIndicators.stressLevel || ''}
+            onChange={(e) => handleInputChange('lifestyleIndicators', 'stressLevel', e.target.value)}
+            className="w-full px-3 py-2 border border-gray-300 rounded-lg"
+            placeholder="1 (low) to 10 (high)"
+            min="1"
+            max="10"
+          />
+          <p className="text-xs text-gray-500 mt-1">1-3: Low, 4-6: Moderate, 7-10: High</p>
+        </div>
+        <div>
+          <label className="block text-sm font-medium mb-2">Occupation Type</label>
+          <select
+            value={profile.lifestyleIndicators.occupationType}
+            onChange={(e) => handleInputChange('lifestyleIndicators', 'occupationType', e.target.value)}
+            className="w-full px-3 py-2 border border-gray-300 rounded-lg"
+          >
+            <option value="">Select occupation type</option>
+            <option value="sedentary">Sedentary (desk job)</option>
+            <option value="light">Light Activity</option>
+            <option value="moderate">Moderate Activity</option>
+            <option value="heavy">Heavy Physical Work</option>
+          </select>
+        </div>
+        <div>
+          <label className="block text-sm font-medium mb-2">Smoking Status</label>
+          <select
+            value={profile.lifestyleIndicators.smokingStatus}
+            onChange={(e) => handleInputChange('lifestyleIndicators', 'smokingStatus', e.target.value)}
+            className="w-full px-3 py-2 border border-gray-300 rounded-lg"
+          >
+            <option value="">Select status</option>
+            <option value="never">Never Smoked</option>
+            <option value="former">Former Smoker</option>
+            <option value="current">Current Smoker</option>
+          </select>
+        </div>
+        <div>
+          <label className="block text-sm font-medium mb-2">Alcohol Consumption</label>
+          <select
+            value={profile.lifestyleIndicators.alcoholConsumption}
+            onChange={(e) => handleInputChange('lifestyleIndicators', 'alcoholConsumption', e.target.value)}
+            className="w-full px-3 py-2 border border-gray-300 rounded-lg"
+          >
+            <option value="">Select consumption</option>
+            <option value="none">None</option>
+            <option value="occasional">Occasional (1-2 drinks/week)</option>
+            <option value="moderate">Moderate (3-7 drinks/week)</option>
+            <option value="heavy">Heavy (8+ drinks/week)</option>
+          </select>
+        </div>
+      </div>
+    </div>
+  );
 
       case 'dietary':
         return (
@@ -534,12 +560,21 @@ const ProfilePage = () => {
         return (
           <div className="space-y-4">
             <h3 className="text-xl font-semibold mb-4">Fitness Goals</h3>
+            
+            {/* Success message for this section */}
+            {successMessage && (
+              <div className="p-4 bg-green-100 border border-green-400 text-green-700 rounded-lg">
+                {successMessage}
+              </div>
+            )}
+            
             <div>
-              <label className="block text-sm font-medium mb-2">Primary Goal</label>
+              <label className="block text-sm font-medium mb-2">Primary Goal *</label>
               <select
-                value={profile.fitnessGoals.primary}
+                value={profile.fitnessGoals.primary || ''}
                 onChange={(e) => handleInputChange('fitnessGoals', 'primary', e.target.value)}
-                className="w-full px-3 py-2 border border-gray-300 rounded-lg"
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
+                required
               >
                 <option value="">Select primary goal</option>
                 <option value="weight-loss">Weight Loss</option>
@@ -549,19 +584,23 @@ const ProfilePage = () => {
                 <option value="flexibility">Improve Flexibility</option>
                 <option value="general-health">General Health</option>
               </select>
+              <p className="text-xs text-gray-500 mt-1">This goal will be referenced in all AI recommendations</p>
             </div>
+            
             <div>
               <label className="block text-sm font-medium mb-2">Target Weight</label>
               <div className="flex gap-2">
                 <input
                   type="number"
-                  value={profile.fitnessGoals.targetWeight.value}
+                  value={profile.fitnessGoals.targetWeight.value || ''}
                   onChange={(e) => handleNestedInputChange('fitnessGoals', 'targetWeight', 'value', e.target.value)}
-                  className="flex-1 px-3 py-2 border border-gray-300 rounded-lg"
+                  className="flex-1 px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
                   placeholder="Target weight"
+                  min="1"
+                  max="500"
                 />
                 <select
-                  value={profile.fitnessGoals.targetWeight.unit}
+                  value={profile.fitnessGoals.targetWeight.unit || 'kg'}
                   onChange={(e) => handleNestedInputChange('fitnessGoals', 'targetWeight', 'unit', e.target.value)}
                   className="px-3 py-2 border border-gray-300 rounded-lg"
                 >
@@ -570,15 +609,66 @@ const ProfilePage = () => {
                 </select>
               </div>
             </div>
+            
             <div>
               <label className="block text-sm font-medium mb-2">Target Date</label>
               <input
                 type="date"
-                value={profile.fitnessGoals.targetDate}
+                value={profile.fitnessGoals.targetDate || ''}
                 onChange={(e) => handleInputChange('fitnessGoals', 'targetDate', e.target.value)}
-                className="w-full px-3 py-2 border border-gray-300 rounded-lg"
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
+                min={new Date().toISOString().split('T')[0]}
               />
             </div>
+            
+            <div>
+              <label className="block text-sm font-medium mb-2">Motivation Level</label>
+              <div className="flex items-center gap-4">
+                <input
+                  type="range"
+                  min="1"
+                  max="10"
+                  value={profile.fitnessGoals.motivationLevel || 5}
+                  onChange={(e) => handleInputChange('fitnessGoals', 'motivationLevel', e.target.value)}
+                  className="flex-1"
+                />
+                <span className="text-lg font-semibold w-8">{profile.fitnessGoals.motivationLevel || 5}</span>
+              </div>
+            </div>
+            
+            <div>
+              <label className="block text-sm font-medium mb-2">Secondary Goals (Optional)</label>
+              <div className="grid grid-cols-2 gap-2">
+                {['Lose Fat', 'Build Muscle', 'Increase Stamina', 'Improve Flexibility', 'Better Sleep', 'Reduce Stress'].map(goal => (
+                  <label key={goal} className="flex items-center">
+                    <input
+                      type="checkbox"
+                      checked={profile.fitnessGoals.secondary?.includes(goal) || false}
+                      onChange={() => {
+                        const current = profile.fitnessGoals.secondary || [];
+                        const updated = current.includes(goal) 
+                          ? current.filter(g => g !== goal)
+                          : [...current, goal];
+                        handleInputChange('fitnessGoals', 'secondary', updated);
+                      }}
+                      className="mr-2"
+                    />
+                    <span className="text-sm">{goal}</span>
+                  </label>
+                ))}
+              </div>
+            </div>
+            
+            {/* Preview of how goals will appear in AI */}
+            {profile.fitnessGoals.primary && (
+              <div className="mt-4 p-4 bg-blue-50 rounded-lg">
+                <h4 className="font-semibold text-sm mb-2">AI Insights Preview:</h4>
+                <p className="text-sm text-gray-700">
+                  "All recommendations will be tailored for your <strong>{profile.fitnessGoals.primary.replace(/-/g, ' ')}</strong> goal
+                  {profile.fitnessGoals.targetWeight.value && ` with a target weight of ${profile.fitnessGoals.targetWeight.value} ${profile.fitnessGoals.targetWeight.unit}`}."
+                </p>
+              </div>
+            )}
           </div>
         );
 
