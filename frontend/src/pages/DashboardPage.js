@@ -1,5 +1,5 @@
-
-import React, { useState, useEffect, useContext } from 'react';
+// src/pages/DashboardPage.js - Dashboard with Fixed AI Insights and Accept/Decline
+import React, { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
 import axios from 'axios';
 import { useAuth } from '../context/AuthContext';
@@ -29,6 +29,9 @@ const DashboardPage = () => {
   const [selectedMetric, setSelectedMetric] = useState('weight');
   const [selectedPeriod, setSelectedPeriod] = useState('month');
   const [error, setError] = useState(null);
+  const [insightsStale, setInsightsStale] = useState(false);
+  const [acceptedRecommendations, setAcceptedRecommendations] = useState(new Set());
+  const [declinedRecommendations, setDeclinedRecommendations] = useState(new Set());
 
   useEffect(() => {
     fetchDashboardData();
@@ -57,7 +60,23 @@ const DashboardPage = () => {
 
       if (profileRes?.data) setProfile(profileRes.data.profile);
       if (metricsRes?.data) setMetrics(metricsRes.data.metrics);
-      if (insightsRes?.data) setAiInsights(insightsRes.data.insights);
+      
+      // Handle AI insights and check if they're stale
+      if (insightsRes?.data) {
+        setAiInsights(insightsRes.data.insights);
+        setInsightsStale(insightsRes.data.isStale || false);
+        
+        // Load previously accepted/declined recommendations
+        if (insightsRes.data.insights?.feedback) {
+          setAcceptedRecommendations(
+            new Set(insightsRes.data.insights.feedback.appliedRecommendations || [])
+          );
+          setDeclinedRecommendations(
+            new Set(insightsRes.data.insights.feedback.ignoredRecommendations || [])
+          );
+        }
+      }
+      
       if (summaryRes?.data) setWeeklySummary(summaryRes.data);
       if (historyRes?.data) setHistoryData(historyRes.data);
 
@@ -87,35 +106,105 @@ const DashboardPage = () => {
   const generateNewInsights = async () => {
     try {
       setInsightsLoading(true);
+      setError(null);
       const token = localStorage.getItem('token');
-      const response = await axios.post('/api/analytics/ai-insights', {}, {
-        headers: { Authorization: `Bearer ${token}` }
-      });
+      
+      // Force regenerate to get fresh insights based on latest data
+      const response = await axios.post('/api/analytics/ai-insights', 
+        { forceRegenerate: true },
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+      
       setAiInsights(response.data.insights);
+      setInsightsStale(false);
+      setAcceptedRecommendations(new Set());
+      setDeclinedRecommendations(new Set());
+      
+      // Show success message
+      if (response.data.message) {
+        console.log(response.data.message);
+      }
     } catch (error) {
       console.error('Generate insights error:', error);
-      setError('Failed to generate new insights');
+      setError('Failed to generate new insights. Please try again.');
     } finally {
       setInsightsLoading(false);
     }
   };
 
-  const provideFeedback = async (recommendationId, helpful) => {
+  // Handle accepting a recommendation
+  const handleAcceptRecommendation = async (recommendationId) => {
     try {
       const token = localStorage.getItem('token');
-      await axios.post('/api/analytics/ai-insights/feedback', {
+      
+      // Send feedback to backend
+      const response = await axios.post('/api/analytics/ai-insights/feedback', {
         insightId: aiInsights._id,
-        helpful,
-        applied: helpful ? [recommendationId] : []
+        action: 'accept',
+        recommendationId
       }, {
         headers: { Authorization: `Bearer ${token}` }
       });
+      
+      // Update local state
+      setAcceptedRecommendations(prev => new Set([...prev, recommendationId]));
+      setDeclinedRecommendations(prev => {
+        const newSet = new Set(prev);
+        newSet.delete(recommendationId);
+        return newSet;
+      });
+      
+      console.log(`Recommendation accepted: ${recommendationId}`);
     } catch (error) {
-      console.error('Feedback error:', error);
+      console.error('Accept recommendation error:', error);
+      setError('Failed to save feedback. Please try again.');
     }
   };
 
-  // Prepare chart data
+  // Handle declining a recommendation
+  const handleDeclineRecommendation = async (recommendationId) => {
+    try {
+      const token = localStorage.getItem('token');
+      
+      // Send feedback to backend
+      const response = await axios.post('/api/analytics/ai-insights/feedback', {
+        insightId: aiInsights._id,
+        action: 'decline',
+        recommendationId
+      }, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      
+      // Update local state
+      setDeclinedRecommendations(prev => new Set([...prev, recommendationId]));
+      setAcceptedRecommendations(prev => {
+        const newSet = new Set(prev);
+        newSet.delete(recommendationId);
+        return newSet;
+      });
+      
+      console.log(`Recommendation declined: ${recommendationId}`);
+    } catch (error) {
+      console.error('Decline recommendation error:', error);
+      setError('Failed to save feedback. Please try again.');
+    }
+  };
+
+  // Helper function to get priority color
+  const getPriorityColor = (priority) => {
+    switch (priority) {
+      case 'high':
+        return 'border-red-200 bg-red-50';
+      case 'medium':
+        return 'border-yellow-200 bg-yellow-50';
+      case 'low':
+        return 'border-green-200 bg-green-50';
+      default:
+        return 'border-gray-200 bg-gray-50';
+    }
+  };
+
+  // Prepare chart data functions
   const prepareProgressChartData = () => {
     if (!progressData?.data || progressData.data.length === 0) return null;
 
@@ -144,169 +233,156 @@ const DashboardPage = () => {
         data: Object.values(metrics.wellnessScore.components),
         backgroundColor: [
           'rgba(59, 130, 246, 0.8)',
-          'rgba(16, 185, 129, 0.8)',
+          'rgba(34, 197, 94, 0.8)',
           'rgba(251, 146, 60, 0.8)',
-          'rgba(147, 51, 234, 0.8)'
-        ],
-        borderWidth: 0
+          'rgba(163, 230, 53, 0.8)'
+        ]
       }]
     };
   };
 
   const prepareActivityHeatmapData = () => {
-    if (!historyData?.history) return [];
+    if (!historyData || historyData.length === 0) return [];
     
-    return historyData.history.map(record => ({
-      date: new Date(record.period.startDate).toLocaleDateString(),
-      count: record.activity?.weeklyFrequency || 0
+    return historyData.map(h => ({
+      date: h.period.startDate,
+      value: h.aggregates?.avgWellnessScore || 0
     }));
   };
 
-  const prepareSparklineData = () => {
-    if (!historyData?.history || historyData.history.length < 7) {
-      return Array(7).fill(0);
-    }
-    
-    return historyData.history
-      .slice(0, 7)
-      .reverse()
-      .map(h => h.metrics?.wellnessScore?.overall || 0);
+  const prepareBMIChartData = () => {
+    if (!historyData || historyData.length === 0) return null;
+
+    const data = historyData
+      .filter(h => h.metrics?.bmi?.value)
+      .map(h => ({
+        date: new Date(h.period.startDate).toLocaleDateString(),
+        value: h.metrics.bmi.value
+      }))
+      .reverse();
+
+    return {
+      labels: data.map(d => d.date),
+      datasets: [{
+        label: 'BMI Trend',
+        data: data.map(d => d.value),
+        borderColor: 'rgb(147, 51, 234)',
+        backgroundColor: 'rgba(147, 51, 234, 0.1)',
+        fill: true,
+        tension: 0.4
+      }]
+    };
   };
 
-  const getBMIColor = (bmi) => {
-    if (!bmi) return 'text-gray-500';
-    if (bmi < 18.5) return 'text-yellow-600';
-    if (bmi < 25) return 'text-green-600';
-    if (bmi < 30) return 'text-orange-600';
-    return 'text-red-600';
-  };
+  const prepareNutritionOverview = () => {
+    if (!metrics) return null;
 
-  const getScoreColor = (score) => {
-    if (!score) return '#e5e7eb';
-    if (score >= 80) return '#10b981';
-    if (score >= 60) return '#f59e0b';
-    if (score >= 40) return '#fb923c';
-    return '#ef4444';
-  };
-
-  const getPriorityColor = (priority) => {
-    switch (priority) {
-      case 'critical':
-      case 'high':
-        return 'bg-red-100 text-red-800 border-red-200';
-      case 'medium':
-        return 'bg-yellow-100 text-yellow-800 border-yellow-200';
-      case 'low':
-        return 'bg-blue-100 text-blue-800 border-blue-200';
-      default:
-        return 'bg-gray-100 text-gray-800 border-gray-200';
-    }
+    return {
+      calories: metrics.dailyCalorieNeeds || 2000,
+      water: metrics.waterIntakeGoal || 2.5,
+      exercise: metrics.exerciseMinutesGoal || 150,
+      progress: metrics.progressToGoal || 0
+    };
   };
 
   if (isLoading) {
     return (
-      <div className="flex justify-center items-center h-64">
-        <div className="text-xl">Loading dashboard...</div>
-      </div>
-    );
-  }
-
-  if (!profile) {
-    return (
-      <div className="max-w-4xl mx-auto">
-        <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-6 text-center">
-          <h2 className="text-2xl font-bold mb-4">Complete Your Profile</h2>
-          <p className="text-gray-700 mb-4">
-            Please complete your health profile to access your personalized dashboard and AI insights.
-          </p>
-          <Link 
-            to="/profile" 
-            className="inline-block bg-blue-600 text-white px-6 py-3 rounded-lg font-semibold hover:bg-blue-700 transition"
-          >
-            Complete Profile
-          </Link>
+      <div className="flex justify-center items-center h-screen">
+        <div className="text-center">
+          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto"></div>
+          <p className="mt-4 text-gray-600">Loading your wellness dashboard...</p>
         </div>
       </div>
     );
   }
 
   return (
-    <div className="max-w-7xl mx-auto px-4 py-8">
+    <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
       {/* Header */}
       <div className="mb-8">
-        <h1 className="text-3xl font-bold text-gray-800">Health Dashboard</h1>
+        <h1 className="text-3xl font-bold text-gray-900">
+          Welcome back, {user?.name || user?.email}!
+        </h1>
         <p className="text-gray-600 mt-2">
-          Welcome back, {user?.email?.split('@')[0]}! Here's your wellness overview.
+          Your personalized health insights and progress tracking
         </p>
       </div>
 
-      {/* Error Message */}
+      {/* Error Alert */}
       {error && (
-        <div className="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded mb-4">
-          {error}
+        <div className="mb-4 p-4 bg-red-50 border border-red-200 rounded-lg">
+          <p className="text-red-700">{error}</p>
         </div>
       )}
 
-      {/* Quick Stats Cards */}
-      <div className="grid lg:grid-cols-4 gap-4 mb-6">
-        <div className="bg-white rounded-lg shadow p-4">
-          <div className="flex justify-between items-start">
-            <div>
-              <p className="text-sm text-gray-600">Wellness Score</p>
-              <p className="text-2xl font-bold">{metrics?.wellnessScore?.overall || 0}</p>
-            </div>
-            <div className="w-16">
-              <Sparkline 
-                data={prepareSparklineData()} 
-                color={getScoreColor(metrics?.wellnessScore?.overall)}
-              />
-            </div>
-          </div>
+      {/* Stale Data Alert */}
+      {insightsStale && (
+        <div className="mb-4 p-4 bg-yellow-50 border border-yellow-200 rounded-lg">
+          <p className="text-yellow-800">
+            Your health data has been updated since these insights were generated. 
+            <button 
+              onClick={generateNewInsights}
+              className="ml-2 text-yellow-900 underline font-semibold"
+            >
+              Generate fresh insights
+            </button>
+          </p>
         </div>
+      )}
 
-        <div className="bg-white rounded-lg shadow p-4">
-          <p className="text-sm text-gray-600">Current BMI</p>
-          <p className={`text-2xl font-bold ${getBMIColor(metrics?.bmi?.value)}`}>
+      {/* Quick Stats */}
+      <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-8">
+        <div className="bg-white rounded-lg shadow p-6">
+          <h3 className="text-sm font-medium text-gray-500">Wellness Score</h3>
+          <p className="text-2xl font-bold text-blue-600">
+            {metrics?.wellnessScore?.overall || 0}/100
+          </p>
+          <p className="text-xs text-gray-500 mt-1">
+            {metrics?.wellnessScore?.overall >= 80 ? 'Excellent' :
+             metrics?.wellnessScore?.overall >= 60 ? 'Good' :
+             metrics?.wellnessScore?.overall >= 40 ? 'Fair' : 'Needs Improvement'}
+          </p>
+        </div>
+        
+        <div className="bg-white rounded-lg shadow p-6">
+          <h3 className="text-sm font-medium text-gray-500">BMI</h3>
+          <p className="text-2xl font-bold">
             {metrics?.bmi?.value?.toFixed(1) || '--'}
           </p>
           <p className="text-xs text-gray-500">{metrics?.bmi?.category}</p>
         </div>
-
-        <div className="bg-white rounded-lg shadow p-4">
-          <p className="text-sm text-gray-600">Weekly Activity</p>
+        
+        <div className="bg-white rounded-lg shadow p-6">
+          <h3 className="text-sm font-medium text-gray-500">Daily Calories</h3>
           <p className="text-2xl font-bold">
-            {profile.initialFitnessAssessment?.weeklyActivityFrequency || 0}
+            {metrics?.dailyCalorieNeeds || '--'}
           </p>
-          <p className="text-xs text-gray-500">days per week</p>
+          <p className="text-xs text-gray-500">kcal/day</p>
         </div>
-
-        <div className="bg-white rounded-lg shadow p-4">
-          <p className="text-sm text-gray-600">Goal Progress</p>
-          <div className="mt-2">
-            <ProgressRing 
-              progress={metrics?.progressToGoal?.percentage || 0}
-              size={60}
-              strokeWidth={6}
-              color="#3b82f6"
-            />
-          </div>
+        
+        <div className="bg-white rounded-lg shadow p-6">
+          <h3 className="text-sm font-medium text-gray-500">Goal Progress</h3>
+          <p className="text-2xl font-bold">
+            {metrics?.progressToGoal || 0}%
+          </p>
+          <p className="text-xs text-gray-500">{profile?.fitnessGoals?.primary?.replace('_', ' ')}</p>
         </div>
       </div>
 
-      {/* Tabs */}
-      <div className="border-b border-gray-200 mb-6">
+      {/* Navigation Tabs */}
+      <div className="border-b border-gray-200 mb-8">
         <nav className="-mb-px flex space-x-8">
-          {['overview', 'insights', 'progress', 'analytics'].map((tab) => (
+          {['overview', 'insights', 'progress', 'nutrition'].map(tab => (
             <button
               key={tab}
               onClick={() => setActiveTab(tab)}
-              className={`py-2 px-1 border-b-2 font-medium text-sm capitalize ${
+              className={`py-2 px-1 border-b-2 font-medium text-sm ${
                 activeTab === tab
                   ? 'border-blue-500 text-blue-600'
                   : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
               }`}
             >
-              {tab}
+              {tab.charAt(0).toUpperCase() + tab.slice(1)}
             </button>
           ))}
         </nav>
@@ -314,78 +390,84 @@ const DashboardPage = () => {
 
       {/* Tab Content */}
       {activeTab === 'overview' && (
-        <div className="grid lg:grid-cols-2 gap-6">
-          {/* BMI Gauge */}
-          <div className="bg-white rounded-lg shadow p-6">
-            <h3 className="text-lg font-semibold mb-4">BMI Status</h3>
-            <GaugeChart
-              value={metrics?.bmi?.value || 0}
-              max={40}
-              title="Body Mass Index"
-              zones={[
-                { value: 18.5, color: '#fbbf24' },
-                { value: 6.5, color: '#10b981' },
-                { value: 5, color: '#fb923c' },
-                { value: 10, color: '#ef4444' }
-              ]}
-            />
-            <div className="mt-4 text-center">
-              <p className={`text-lg font-semibold ${getBMIColor(metrics?.bmi?.value)}`}>
-                {metrics?.bmi?.category || 'Unknown'}
-              </p>
-              <p className="text-sm text-gray-600">
-                Optimal range: 18.5 - 24.9
-              </p>
-            </div>
-          </div>
-
+        <div className="space-y-8">
           {/* Wellness Score Breakdown */}
           <div className="bg-white rounded-lg shadow p-6">
-            <h3 className="text-lg font-semibold mb-4">Wellness Score Breakdown</h3>
-            <DoughnutChart
-              data={prepareWellnessScoreChartData()}
-              title=""
-            />
-            <div className="mt-4">
-              <p className="text-center text-2xl font-bold">
-                {metrics?.wellnessScore?.overall || 0}/100
-              </p>
-            </div>
-          </div>
-
-          {/* Goal Progress Comparison */}
-          <div className="bg-white rounded-lg shadow p-6">
-            <h3 className="text-lg font-semibold mb-4">Goals Progress</h3>
-            <div className="space-y-4">
-              {profile.fitnessGoals?.targetWeight && (
-                <ComparisonChart
-                  current={profile.physicalMetrics?.weight?.normalizedValue || 0}
-                  target={profile.fitnessGoals.targetWeight.normalizedValue}
-                  title="Weight Goal"
+            <h3 className="text-xl font-semibold mb-4">Wellness Score Breakdown</h3>
+            <div className="grid md:grid-cols-2 gap-6">
+              {prepareWellnessScoreChartData() && (
+                <DoughnutChart
+                  data={prepareWellnessScoreChartData()}
+                  title="Component Scores"
                 />
               )}
-              
-              <ComparisonChart
-                current={profile.initialFitnessAssessment?.weeklyActivityFrequency || 0}
-                target={5}
-                title="Weekly Activity Goal"
-              />
-              
-              <ComparisonChart
-                current={metrics?.wellnessScore?.overall || 0}
-                target={80}
-                title="Wellness Score Goal"
+              <GaugeChart
+                value={metrics?.wellnessScore?.overall || 0}
+                max={100}
+                title="Overall Score"
               />
             </div>
           </div>
 
-          {/* Activity Heatmap */}
-          <div className="bg-white rounded-lg shadow p-6">
-            <ActivityHeatmap
-              data={prepareActivityHeatmapData()}
-              title="Activity Tracker (Last 12 Weeks)"
-            />
+          {/* Recent Progress */}
+          {historyData && historyData.length > 0 && (
+            <div className="bg-white rounded-lg shadow p-6">
+              <h3 className="text-xl font-semibold mb-4">Recent Progress</h3>
+              {prepareBMIChartData() && (
+                <LineChart
+                  data={prepareBMIChartData()}
+                  title="BMI Trend (Last 30 Days)"
+                />
+              )}
+            </div>
+          )}
+
+          {/* Quick Actions */}
+          <div className="grid md:grid-cols-3 gap-4">
+            <Link
+              to="/profile"
+              className="bg-white rounded-lg shadow p-6 hover:shadow-lg transition text-center"
+            >
+              <div className="text-3xl mb-2">📊</div>
+              <h3 className="font-semibold">Update Profile</h3>
+              <p className="text-sm text-gray-600">Keep your health data current</p>
+            </Link>
+            
+            <Link
+              to="/meal-planner"
+              className="bg-white rounded-lg shadow p-6 hover:shadow-lg transition text-center"
+            >
+              <div className="text-3xl mb-2">🍽️</div>
+              <h3 className="font-semibold">Plan Meals</h3>
+              <p className="text-sm text-gray-600">Get personalized meal suggestions</p>
+            </Link>
+            
+            <Link
+              to="/nutrition-analysis"
+              className="bg-white rounded-lg shadow p-6 hover:shadow-lg transition text-center"
+            >
+              <div className="text-3xl mb-2">📈</div>
+              <h3 className="font-semibold">Nutrition Analysis</h3>
+              <p className="text-sm text-gray-600">Track your nutritional intake</p>
+            </Link>
           </div>
+
+          {/* Weekly Summary */}
+          {weeklySummary && (
+            <div className="bg-white rounded-lg shadow p-6">
+              <h3 className="text-xl font-semibold mb-4">Weekly Summary</h3>
+              <div className="grid md:grid-cols-4 gap-4">
+                {weeklySummary.metrics && Object.entries(weeklySummary.metrics).map(([key, value]) => (
+                  value !== null && (
+                    <div key={key} className="text-center">
+                      <p className="text-sm text-gray-500">{key.replace(/([A-Z])/g, ' $1').trim()}</p>
+                      <p className="text-lg font-semibold">{typeof value === 'number' ? value.toFixed(1) : value}</p>
+                    </div>
+                  )
+                ))}
+              </div>
+            </div>
+          )}
         </div>
       )}
 
@@ -406,13 +488,44 @@ const DashboardPage = () => {
 
             {aiInsights ? (
               <div className="space-y-6">
+                {/* Display fitness goal prominently */}
+                {profile?.fitnessGoals?.primary && (
+                  <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
+                    <h4 className="font-semibold text-blue-900 mb-2">Your Fitness Goal</h4>
+                    <p className="text-blue-800">
+                      Primary Goal: <strong>{profile.fitnessGoals.primary.replace('_', ' ')}</strong>
+                      {profile.fitnessGoals.targetWeight && (
+                        <span className="ml-2">
+                          | Target Weight: <strong>{profile.fitnessGoals.targetWeight.normalizedValue}kg</strong>
+                        </span>
+                      )}
+                      {profile.fitnessGoals.timeline && (
+                        <span className="ml-2">
+                          | Timeline: <strong>{profile.fitnessGoals.timeline}</strong>
+                        </span>
+                      )}
+                    </p>
+                    {profile.fitnessGoals.secondary && profile.fitnessGoals.secondary.length > 0 && (
+                      <p className="text-sm text-blue-700 mt-1">
+                        Secondary Goals: {profile.fitnessGoals.secondary.join(', ').replace(/_/g, ' ')}
+                      </p>
+                    )}
+                  </div>
+                )}
+
                 {/* Recommendations with Visual Priority */}
-                {aiInsights.recommendations?.length > 0 && (
+                {aiInsights.insights?.recommendations?.length > 0 && (
                   <div>
                     <h4 className="font-semibold mb-3">Personalized Recommendations</h4>
                     <div className="grid md:grid-cols-2 gap-3">
-                      {aiInsights.recommendations.map((rec, index) => (
-                        <div key={rec.id || index} className={`border rounded-lg p-4 ${getPriorityColor(rec.priority)}`}>
+                      {aiInsights.insights.recommendations.map((rec, index) => (
+                        <div 
+                          key={rec.id || index} 
+                          className={`border rounded-lg p-4 ${getPriorityColor(rec.priority)} ${
+                            acceptedRecommendations.has(rec.id) ? 'ring-2 ring-green-500' : 
+                            declinedRecommendations.has(rec.id) ? 'opacity-50' : ''
+                          }`}
+                        >
                           <div className="flex justify-between items-start mb-2">
                             <h5 className="font-semibold">{rec.title}</h5>
                             <span className="text-xs px-2 py-1 bg-white rounded">
@@ -420,6 +533,14 @@ const DashboardPage = () => {
                             </span>
                           </div>
                           <p className="text-sm mb-3">{rec.description}</p>
+                          
+                          {/* Show goal alignment */}
+                          {rec.goalAlignment && (
+                            <div className="mb-3 p-2 bg-white bg-opacity-60 rounded">
+                              <p className="text-xs font-semibold text-gray-700">Goal Alignment:</p>
+                              <p className="text-xs text-gray-600">{rec.goalAlignment}</p>
+                            </div>
+                          )}
                           
                           {rec.actionItems?.length > 0 && (
                             <div className="mb-3">
@@ -441,16 +562,28 @@ const DashboardPage = () => {
                             </span>
                             <div className="flex gap-2">
                               <button
-                                onClick={() => provideFeedback(rec.id, true)}
-                                className="text-xs px-2 py-1 bg-green-100 text-green-700 rounded hover:bg-green-200"
+                                onClick={() => handleAcceptRecommendation(rec.id)}
+                                disabled={acceptedRecommendations.has(rec.id)}
+                                className={`text-xs px-3 py-1.5 rounded transition ${
+                                  acceptedRecommendations.has(rec.id)
+                                    ? 'bg-green-600 text-white'
+                                    : 'bg-green-100 text-green-700 hover:bg-green-200'
+                                }`}
+                                title="Accept and apply this recommendation"
                               >
-                                ✓
+                                {acceptedRecommendations.has(rec.id) ? '✓ Accepted' : '✓ Accept'}
                               </button>
                               <button
-                                onClick={() => provideFeedback(rec.id, false)}
-                                className="text-xs px-2 py-1 bg-red-100 text-red-700 rounded hover:bg-red-200"
+                                onClick={() => handleDeclineRecommendation(rec.id)}
+                                disabled={declinedRecommendations.has(rec.id)}
+                                className={`text-xs px-3 py-1.5 rounded transition ${
+                                  declinedRecommendations.has(rec.id)
+                                    ? 'bg-red-600 text-white'
+                                    : 'bg-red-100 text-red-700 hover:bg-red-200'
+                                }`}
+                                title="Decline this recommendation"
                               >
-                                ✗
+                                {declinedRecommendations.has(rec.id) ? '✗ Declined' : '✗ Decline'}
                               </button>
                             </div>
                           </div>
@@ -460,28 +593,115 @@ const DashboardPage = () => {
                   </div>
                 )}
 
-                {/* Visual Achievements */}
-                {aiInsights.achievements?.length > 0 && (
+                {/* Warnings */}
+                {aiInsights.insights?.warnings?.length > 0 && (
                   <div>
-                    <h4 className="font-semibold mb-3">Recent Achievements</h4>
-                    <div className="grid md:grid-cols-3 gap-3">
-                      {aiInsights.achievements.map((achievement, index) => (
-                        <div key={index} className="bg-gradient-to-r from-green-50 to-emerald-50 border border-green-200 rounded-lg p-4 text-center">
-                          <div className="text-3xl mb-2">{achievement.emoji || '🏆'}</div>
-                          <p className="font-semibold text-green-800">{achievement.title}</p>
-                          <p className="text-sm text-green-700">{achievement.description}</p>
+                    <h4 className="font-semibold mb-3">Health Alerts</h4>
+                    <div className="space-y-2">
+                      {aiInsights.insights.warnings.map((warning, index) => (
+                        <div key={index} className={`border rounded-lg p-4 ${
+                          warning.type === 'alert' ? 'bg-red-50 border-red-200' :
+                          warning.type === 'warning' ? 'bg-yellow-50 border-yellow-200' :
+                          'bg-blue-50 border-blue-200'
+                        }`}>
+                          <h5 className="font-semibold mb-1">{warning.message}</h5>
+                          <p className="text-sm mb-2">{warning.reason}</p>
+                          <p className="text-sm font-medium">Suggested Action: {warning.suggestedAction}</p>
                         </div>
                       ))}
                     </div>
                   </div>
                 )}
+
+                {/* Achievements */}
+                {aiInsights.insights?.achievements?.length > 0 && (
+                  <div>
+                    <h4 className="font-semibold mb-3">Recent Achievements</h4>
+                    <div className="grid md:grid-cols-3 gap-3">
+                      {aiInsights.insights.achievements.map((achievement, index) => (
+                        <div key={index} className="bg-gradient-to-r from-green-50 to-emerald-50 border border-green-200 rounded-lg p-4 text-center">
+                          <div className="text-3xl mb-2">{achievement.emoji || '🏆'}</div>
+                          <p className="font-semibold text-green-800">{achievement.title}</p>
+                          <p className="text-sm text-green-700">{achievement.description}</p>
+                          {achievement.improvement && (
+                            <p className="text-xs mt-2 text-green-600">{achievement.improvement}</p>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* Motivation */}
+                {aiInsights.insights?.motivation && (
+                  <div className="bg-gradient-to-r from-purple-50 to-pink-50 border border-purple-200 rounded-lg p-6">
+                    <h4 className="font-semibold mb-3">Daily Motivation</h4>
+                    {aiInsights.insights.motivation.quote && (
+                      <blockquote className="text-lg italic text-purple-900 mb-3">
+                        "{aiInsights.insights.motivation.quote}"
+                      </blockquote>
+                    )}
+                    {aiInsights.insights.motivation.tip && (
+                      <p className="text-sm text-purple-800 mb-2">
+                        <strong>Tip:</strong> {aiInsights.insights.motivation.tip}
+                      </p>
+                    )}
+                    {aiInsights.insights.motivation.challenge && (
+                      <p className="text-sm text-purple-800">
+                        <strong>Weekly Challenge:</strong> {aiInsights.insights.motivation.challenge}
+                      </p>
+                    )}
+                  </div>
+                )}
+
+                {/* Summary */}
+                {aiInsights.insights?.summary && (
+                  <div className="bg-gray-50 border border-gray-200 rounded-lg p-6">
+                    <h4 className="font-semibold mb-3">Summary</h4>
+                    <p className="text-sm mb-3">{aiInsights.insights.summary.overview}</p>
+                    
+                    {aiInsights.insights.summary.keyPoints?.length > 0 && (
+                      <div className="mb-3">
+                        <p className="text-sm font-semibold mb-1">Key Points:</p>
+                        <ul className="text-sm space-y-1">
+                          {aiInsights.insights.summary.keyPoints.map((point, i) => (
+                            <li key={i} className="flex items-start">
+                              <span className="mr-2">•</span>
+                              <span>{point}</span>
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+                    
+                    {aiInsights.insights.summary.progressAssessment && (
+                      <p className="text-sm mb-3">
+                        <strong>Progress Assessment:</strong> {aiInsights.insights.summary.progressAssessment}
+                      </p>
+                    )}
+                    
+                    {aiInsights.insights.summary.nextSteps?.length > 0 && (
+                      <div>
+                        <p className="text-sm font-semibold mb-1">Next Steps:</p>
+                        <ul className="text-sm space-y-1">
+                          {aiInsights.insights.summary.nextSteps.map((step, i) => (
+                            <li key={i} className="flex items-start">
+                              <span className="mr-2">→</span>
+                              <span>{step}</span>
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
             ) : (
               <div className="text-center py-8">
-                <p className="text-gray-500 mb-4">No insights available yet.</p>
+                <p className="text-gray-600 mb-4">No insights available yet.</p>
                 <button
                   onClick={generateNewInsights}
-                  className="px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition"
+                  className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition"
                 >
                   Generate Your First Insights
                 </button>
@@ -493,202 +713,127 @@ const DashboardPage = () => {
 
       {activeTab === 'progress' && (
         <div className="space-y-6">
-          {/* Controls */}
+          {/* Progress Controls */}
           <div className="bg-white rounded-lg shadow p-6">
-            <div className="flex justify-between items-center mb-6">
+            <div className="flex justify-between items-center mb-4">
               <h3 className="text-xl font-semibold">Progress Tracking</h3>
-              <div className="flex gap-4">
+              <div className="flex gap-2">
                 <select
                   value={selectedMetric}
                   onChange={(e) => setSelectedMetric(e.target.value)}
-                  className="px-3 py-2 border border-gray-300 rounded-lg"
+                  className="px-3 py-2 border rounded-lg"
                 >
                   <option value="weight">Weight</option>
                   <option value="bmi">BMI</option>
                   <option value="wellness">Wellness Score</option>
-                  <option value="activity">Activity Level</option>
+                  <option value="sleep">Sleep</option>
+                  <option value="stress">Stress</option>
                 </select>
-                
                 <select
                   value={selectedPeriod}
                   onChange={(e) => setSelectedPeriod(e.target.value)}
-                  className="px-3 py-2 border border-gray-300 rounded-lg"
+                  className="px-3 py-2 border rounded-lg"
                 >
-                  <option value="week">Last Week</option>
-                  <option value="month">Last Month</option>
-                  <option value="3months">Last 3 Months</option>
-                  <option value="6months">Last 6 Months</option>
-                  <option value="year">Last Year</option>
+                  <option value="week">Week</option>
+                  <option value="month">Month</option>
+                  <option value="quarter">Quarter</option>
+                  <option value="year">Year</option>
                 </select>
               </div>
             </div>
 
             {/* Progress Chart */}
-            {progressData?.data?.length > 0 ? (
-              <LineChart
-                data={prepareProgressChartData()}
-                title={`${selectedMetric.charAt(0).toUpperCase() + selectedMetric.slice(1)} Progress`}
-              />
-            ) : (
-              <div className="text-center py-12 text-gray-500">
-                No data available for the selected period
-              </div>
-            )}
-
-            {/* Progress Summary Stats */}
-            {progressData?.summary && (
-              <div className="grid md:grid-cols-5 gap-4 mt-6">
-                <div className="bg-gray-50 rounded-lg p-3">
-                  <p className="text-xs text-gray-600">Start</p>
-                  <p className="text-lg font-bold">
-                    {progressData.summary.startValue?.toFixed(1)}
-                  </p>
-                </div>
-                <div className="bg-gray-50 rounded-lg p-3">
-                  <p className="text-xs text-gray-600">Current</p>
-                  <p className="text-lg font-bold">
-                    {progressData.summary.currentValue?.toFixed(1)}
-                  </p>
-                </div>
-                <div className="bg-gray-50 rounded-lg p-3">
-                  <p className="text-xs text-gray-600">Change</p>
-                  <p className={`text-lg font-bold ${
-                    progressData.summary.change > 0 ? 'text-red-600' : 'text-green-600'
-                  }`}>
-                    {progressData.summary.change > 0 ? '+' : ''}
-                    {progressData.summary.change?.toFixed(1)}
-                  </p>
-                </div>
-                <div className="bg-gray-50 rounded-lg p-3">
-                  <p className="text-xs text-gray-600">Average</p>
-                  <p className="text-lg font-bold">
-                    {progressData.summary.average?.toFixed(1)}
-                  </p>
-                </div>
-                <div className="bg-gray-50 rounded-lg p-3">
-                  <p className="text-xs text-gray-600">Trend</p>
-                  <p className="text-lg font-bold capitalize">
-                    {progressData.summary.trend}
-                  </p>
+            {progressData && (
+              <div className="mb-6">
+                {prepareProgressChartData() && (
+                  <LineChart
+                    data={prepareProgressChartData()}
+                    title={`${selectedMetric.charAt(0).toUpperCase() + selectedMetric.slice(1)} Over Time`}
+                  />
+                )}
+                
+                {/* Statistics */}
+                <div className="grid grid-cols-4 gap-4 mt-4">
+                  <div className="text-center">
+                    <p className="text-sm text-gray-500">Average</p>
+                    <p className="text-lg font-semibold">{progressData.stats?.average || '--'}</p>
+                  </div>
+                  <div className="text-center">
+                    <p className="text-sm text-gray-500">Latest</p>
+                    <p className="text-lg font-semibold">{progressData.stats?.latest || '--'}</p>
+                  </div>
+                  <div className="text-center">
+                    <p className="text-sm text-gray-500">Trend</p>
+                    <p className="text-lg font-semibold capitalize">{progressData.stats?.trend || '--'}</p>
+                  </div>
+                  <div className="text-center">
+                    <p className="text-sm text-gray-500">Data Points</p>
+                    <p className="text-lg font-semibold">{progressData.stats?.dataPoints || 0}</p>
+                  </div>
                 </div>
               </div>
             )}
           </div>
-        </div>
-      )}
 
-      {activeTab === 'analytics' && (
-        <div className="space-y-6">
-          {/* Weekly Summary with Charts */}
-          <div className="bg-white rounded-lg shadow p-6">
-            <h3 className="text-xl font-semibold mb-6">Weekly Analytics</h3>
+          {/* Comparison Charts */}
+          <div className="grid md:grid-cols-2 gap-6">
+            <div className="bg-white rounded-lg shadow p-6">
+              <ComparisonChart
+                current={profile?.initialFitnessAssessment?.weeklyActivityFrequency || 0}
+                target={5}
+                title="Weekly Activity Goal"
+              />
+            </div>
             
-            {weeklySummary ? (
-              <div className="space-y-6">
-                {/* Summary Cards */}
-                <div className="grid md:grid-cols-4 gap-4">
-                  <div className="bg-blue-50 rounded-lg p-4 text-center">
-                    <ProgressRing
-                      progress={(weeklySummary.daysTracked / 7) * 100}
-                      size={80}
-                      strokeWidth={6}
-                      color="#3b82f6"
-                    />
-                    <p className="text-sm text-blue-600 font-semibold mt-2">Days Tracked</p>
-                    <p className="text-lg font-bold text-blue-800">
-                      {weeklySummary.daysTracked}/7
+            <div className="bg-white rounded-lg shadow p-6">
+              <ComparisonChart
+                current={metrics?.wellnessScore?.overall || 0}
+                target={80}
+                title="Wellness Score Goal"
+              />
+            </div>
+          </div>
+
+          {/* Activity Heatmap */}
+          <div className="bg-white rounded-lg shadow p-6">
+            <ActivityHeatmap
+              data={prepareActivityHeatmapData()}
+              title="Activity Tracker (Last 30 Days)"
+            />
+          </div>
+
+          {/* Goal Progress */}
+          {profile?.fitnessGoals?.targetWeight && (
+            <div className="bg-white rounded-lg shadow p-6">
+              <h3 className="text-xl font-semibold mb-4">Goal Progress</h3>
+              <div className="space-y-4">
+                <div>
+                  <p className="text-sm text-gray-600 mb-2">Weight Progress</p>
+                  <div className="flex justify-between items-center mb-2">
+                    <span className="text-sm">Current: {profile.physicalMetrics?.weight?.normalizedValue}kg</span>
+                    <span className="text-sm">Target: {profile.fitnessGoals.targetWeight.normalizedValue}kg</span>
+                  </div>
+                  <div className="w-full bg-gray-200 rounded-full h-2">
+                    <div 
+                      className="bg-blue-600 h-2 rounded-full"
+                      style={{ width: `${Math.min(100, Math.max(0, metrics?.progressToGoal || 0))}%` }}
+                    ></div>
+                  </div>
+                </div>
+                
+                <div className="grid grid-cols-2 gap-4 mt-4">
+                  <div className="text-center">
+                    <p className="text-sm text-gray-500">Remaining</p>
+                    <p className="text-lg font-semibold">
+                      {Math.abs(profile.fitnessGoals.targetWeight.normalizedValue - profile.physicalMetrics?.weight?.normalizedValue).toFixed(1)}kg
                     </p>
                   </div>
-                  
-                  <div className="bg-green-50 rounded-lg p-4 text-center">
-                    <div className="text-3xl font-bold text-green-800">
-                      {weeklySummary.metrics?.avgWellnessScore?.toFixed(0) || '--'}
-                    </div>
-                    <p className="text-sm text-green-600 font-semibold">Avg Wellness</p>
+                  <div className="text-center">
+                    <p className="text-sm text-gray-500">Est. Time</p>
+                    <p className="text-lg font-semibold">
+                      {Math.ceil(Math.abs(profile.fitnessGoals.targetWeight.normalizedValue - profile.physicalMetrics?.weight?.normalizedValue) / 0.5)} weeks
+                    </p>
                   </div>
-                  
-                  <div className="bg-purple-50 rounded-lg p-4 text-center">
-                    <div className="text-3xl font-bold text-purple-800">
-                      {weeklySummary.metrics?.avgWeight?.toFixed(1) || '--'}
-                    </div>
-                    <p className="text-sm text-purple-600 font-semibold">Avg Weight (kg)</p>
-                  </div>
-                  
-                  <div className="bg-orange-50 rounded-lg p-4 text-center">
-                    <div className="text-3xl font-bold text-orange-800">
-                      {weeklySummary.metrics?.avgBMI?.toFixed(1) || '--'}
-                    </div>
-                    <p className="text-sm text-orange-600 font-semibold">Avg BMI</p>
-                  </div>
-                </div>
-
-                {/* Comparison Chart */}
-                {historyData?.history?.length > 1 && (
-                  <div>
-                    <h4 className="font-semibold mb-3">Weekly Comparison</h4>
-                    <BarChart
-                      data={{
-                        labels: ['Last Week', 'This Week'],
-                        datasets: [{
-                          label: 'Wellness Score',
-                          data: [
-                            historyData.history[1]?.metrics?.wellnessScore?.overall || 0,
-                            historyData.history[0]?.metrics?.wellnessScore?.overall || 0
-                          ],
-                          backgroundColor: ['rgba(59, 130, 246, 0.8)', 'rgba(16, 185, 129, 0.8)']
-                        }]
-                      }}
-                      title=""
-                    />
-                  </div>
-                )}
-
-                {/* Trends */}
-                {weeklySummary.trends?.length > 0 && (
-                  <div>
-                    <h4 className="font-semibold mb-2">Identified Trends</h4>
-                    <div className="flex flex-wrap gap-2">
-                      {weeklySummary.trends.map((trend, index) => (
-                        <span key={index} className="px-3 py-1 bg-blue-100 text-blue-800 rounded-full text-sm">
-                          {trend.replace('_', ' ')}
-                        </span>
-                      ))}
-                    </div>
-                  </div>
-                )}
-              </div>
-            ) : (
-              <div className="text-center py-8">
-                <p className="text-gray-500">No analytics data available yet.</p>
-                <p className="text-sm text-gray-400 mt-2">
-                  Track your health daily to generate analytics.
-                </p>
-              </div>
-            )}
-          </div>
-
-          {/* Historical Stats */}
-          {historyData?.statistics && (
-            <div className="bg-white rounded-lg shadow p-6">
-              <h3 className="text-lg font-semibold mb-4">Historical Statistics</h3>
-              <div className="grid md:grid-cols-3 gap-4">
-                <div>
-                  <p className="text-sm text-gray-600">Best Wellness Score</p>
-                  <p className="text-2xl font-bold text-green-600">
-                    {historyData.statistics.bestWellnessScore || 0}
-                  </p>
-                </div>
-                <div>
-                  <p className="text-sm text-gray-600">Average Score</p>
-                  <p className="text-2xl font-bold">
-                    {historyData.statistics.averages?.avgWellnessScore?.toFixed(0) || 0}
-                  </p>
-                </div>
-                <div>
-                  <p className="text-sm text-gray-600">Consistency</p>
-                  <p className="text-2xl font-bold">
-                    {historyData.statistics.consistency || 0}%
-                  </p>
                 </div>
               </div>
             </div>
@@ -696,21 +841,177 @@ const DashboardPage = () => {
         </div>
       )}
 
-      {/* Quick Actions */}
-      <div className="mt-8 flex gap-4 justify-center">
-        <Link 
-          to="/profile" 
-          className="px-6 py-3 bg-blue-600 text-white rounded-lg font-semibold hover:bg-blue-700 transition"
-        >
-          Update Profile
-        </Link>
-        <button 
-          onClick={fetchDashboardData}
-          className="px-6 py-3 bg-gray-200 text-gray-800 rounded-lg font-semibold hover:bg-gray-300 transition"
-        >
-          Refresh Data
-        </button>
-      </div>
+      {activeTab === 'nutrition' && (
+        <div className="space-y-6">
+          <div className="bg-white rounded-lg shadow p-6">
+            <h3 className="text-xl font-semibold mb-4">Nutrition Hub</h3>
+            
+            {/* Nutrition Overview */}
+            {prepareNutritionOverview() && (
+              <div className="grid md:grid-cols-4 gap-4 mb-6">
+                <div className="text-center p-4 bg-blue-50 rounded-lg">
+                  <p className="text-sm text-gray-600">Daily Calories</p>
+                  <p className="text-2xl font-bold text-blue-600">{prepareNutritionOverview().calories}</p>
+                  <p className="text-xs text-gray-500">kcal/day</p>
+                </div>
+                <div className="text-center p-4 bg-cyan-50 rounded-lg">
+                  <p className="text-sm text-gray-600">Water Intake</p>
+                  <p className="text-2xl font-bold text-cyan-600">{prepareNutritionOverview().water}</p>
+                  <p className="text-xs text-gray-500">liters/day</p>
+                </div>
+                <div className="text-center p-4 bg-green-50 rounded-lg">
+                  <p className="text-sm text-gray-600">Exercise Goal</p>
+                  <p className="text-2xl font-bold text-green-600">{prepareNutritionOverview().exercise}</p>
+                  <p className="text-xs text-gray-500">minutes/week</p>
+                </div>
+                <div className="text-center p-4 bg-purple-50 rounded-lg">
+                  <p className="text-sm text-gray-600">Goal Progress</p>
+                  <p className="text-2xl font-bold text-purple-600">{prepareNutritionOverview().progress}%</p>
+                  <p className="text-xs text-gray-500">to target</p>
+                </div>
+              </div>
+            )}
+            
+            <div className="grid md:grid-cols-2 gap-6">
+              <Link
+                to="/nutrition-preferences"
+                className="border rounded-lg p-6 hover:shadow-lg transition"
+              >
+                <div className="flex items-start">
+                  <div className="text-2xl mr-4">🥗</div>
+                  <div>
+                    <h4 className="font-semibold mb-2">Dietary Preferences</h4>
+                    <p className="text-sm text-gray-600">Update your dietary restrictions, allergies, and preferences</p>
+                    {profile?.dietaryPreferences?.length > 0 && (
+                      <p className="text-xs text-gray-500 mt-2">
+                        Current: {profile.dietaryPreferences.slice(0, 3).join(', ')}
+                        {profile.dietaryPreferences.length > 3 && '...'}
+                      </p>
+                    )}
+                  </div>
+                </div>
+              </Link>
+              
+              <Link
+                to="/meal-planner"
+                className="border rounded-lg p-6 hover:shadow-lg transition"
+              >
+                <div className="flex items-start">
+                  <div className="text-2xl mr-4">📅</div>
+                  <div>
+                    <h4 className="font-semibold mb-2">Meal Planner</h4>
+                    <p className="text-sm text-gray-600">Generate personalized daily or weekly meal plans</p>
+                    <p className="text-xs text-gray-500 mt-2">AI-powered recommendations</p>
+                  </div>
+                </div>
+              </Link>
+              
+              <Link
+                to="/recipe-search"
+                className="border rounded-lg p-6 hover:shadow-lg transition"
+              >
+                <div className="flex items-start">
+                  <div className="text-2xl mr-4">🔍</div>
+                  <div>
+                    <h4 className="font-semibold mb-2">Recipe Search</h4>
+                    <p className="text-sm text-gray-600">Find and generate recipes tailored to your needs</p>
+                    <p className="text-xs text-gray-500 mt-2">500+ recipes available</p>
+                  </div>
+                </div>
+              </Link>
+              
+              <Link
+                to="/nutrition-analysis"
+                className="border rounded-lg p-6 hover:shadow-lg transition"
+              >
+                <div className="flex items-start">
+                  <div className="text-2xl mr-4">📊</div>
+                  <div>
+                    <h4 className="font-semibold mb-2">Nutrition Analysis</h4>
+                    <p className="text-sm text-gray-600">Track and analyze your nutritional intake</p>
+                    <p className="text-xs text-gray-500 mt-2">Detailed macro tracking</p>
+                  </div>
+                </div>
+              </Link>
+              
+              <Link
+                to="/shopping-list"
+                className="border rounded-lg p-6 hover:shadow-lg transition"
+              >
+                <div className="flex items-start">
+                  <div className="text-2xl mr-4">🛒</div>
+                  <div>
+                    <h4 className="font-semibold mb-2">Shopping List</h4>
+                    <p className="text-sm text-gray-600">Generate shopping lists from your meal plans</p>
+                    <p className="text-xs text-gray-500 mt-2">Organized by categories</p>
+                  </div>
+                </div>
+              </Link>
+              
+              <div className="border rounded-lg p-6 bg-gradient-to-br from-blue-50 to-purple-50">
+                <div className="flex items-start">
+                  <div className="text-2xl mr-4">✨</div>
+                  <div>
+                    <h4 className="font-semibold mb-2">Nutrition Insights</h4>
+                    <p className="text-sm text-gray-600">AI analyzes your nutrition patterns</p>
+                    <button
+                      onClick={() => setActiveTab('insights')}
+                      className="text-xs text-blue-600 hover:text-blue-700 mt-2 underline"
+                    >
+                      View your insights →
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+          
+          {/* Recent Meals */}
+          <div className="bg-white rounded-lg shadow p-6">
+            <h3 className="text-xl font-semibold mb-4">Quick Start</h3>
+            <div className="space-y-3">
+              <div className="flex justify-between items-center p-3 bg-gray-50 rounded-lg">
+                <div>
+                  <p className="font-medium">Generate Today's Meal Plan</p>
+                  <p className="text-sm text-gray-600">Get personalized meals for today</p>
+                </div>
+                <Link
+                  to="/meal-planner"
+                  className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition text-sm"
+                >
+                  Generate
+                </Link>
+              </div>
+              
+              <div className="flex justify-between items-center p-3 bg-gray-50 rounded-lg">
+                <div>
+                  <p className="font-medium">Update Dietary Preferences</p>
+                  <p className="text-sm text-gray-600">Ensure meals match your needs</p>
+                </div>
+                <Link
+                  to="/nutrition-preferences"
+                  className="px-4 py-2 bg-gray-600 text-white rounded-lg hover:bg-gray-700 transition text-sm"
+                >
+                  Update
+                </Link>
+              </div>
+              
+              <div className="flex justify-between items-center p-3 bg-gray-50 rounded-lg">
+                <div>
+                  <p className="font-medium">Track Today's Nutrition</p>
+                  <p className="text-sm text-gray-600">Log meals and analyze intake</p>
+                </div>
+                <Link
+                  to="/nutrition-analysis"
+                  className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition text-sm"
+                >
+                  Track
+                </Link>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

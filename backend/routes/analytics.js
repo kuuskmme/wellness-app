@@ -1,4 +1,4 @@
-
+// routes/analytics.js - Health Analytics and AI Routes with Fixed AI Insights
 const express = require('express');
 const router = express.Router();
 const { body, validationResult } = require('express-validator');
@@ -68,10 +68,10 @@ router.get('/health-metrics', async (req, res) => {
 });
 
 // =====================
-// AI INSIGHTS
+// AI INSIGHTS - FIXED
 // =====================
 
-// Generate AI insights
+// Generate AI insights - FORCE REGENERATION WHEN DATA CHANGES
 router.post('/ai-insights', requireDataConsent, async (req, res) => {
   try {
     // Check if user has AI insights enabled
@@ -79,16 +79,6 @@ router.post('/ai-insights', requireDataConsent, async (req, res) => {
     if (!user.dataSharing.aiInsights) {
       return res.status(403).json({
         message: 'AI insights are disabled. Please enable them in your privacy settings.'
-      });
-    }
-
-    // Check for existing fresh insights
-    const existingInsights = await AIInsight.getLatestActive(req.userId);
-    if (existingInsights && existingInsights.isFresh) {
-      return res.json({
-        insights: existingInsights.insights,
-        cached: true,
-        generatedAt: existingInsights.metadata.generatedAt
       });
     }
 
@@ -100,6 +90,30 @@ router.post('/ai-insights', requireDataConsent, async (req, res) => {
       });
     }
 
+    // Check if profile has been updated since last insights generation
+    const existingInsights = await AIInsight.getLatestActive(req.userId);
+    const forceRegenerate = req.body.forceRegenerate || false;
+    
+    // Always regenerate if:
+    // 1. Force regenerate is requested
+    // 2. Profile was updated after insights were generated
+    // 3. No existing insights
+    const shouldRegenerate = forceRegenerate || 
+      !existingInsights || 
+      (existingInsights && profile.metadata.lastUpdated > existingInsights.metadata.generatedAt);
+
+    if (!shouldRegenerate && existingInsights && existingInsights.isFresh) {
+      return res.json({
+        insights: existingInsights,
+        cached: true,
+        generatedAt: existingInsights.metadata.generatedAt,
+        message: 'Using cached insights. Click "Generate New Insights" to refresh.'
+      });
+    }
+
+    // Deactivate old insights before generating new ones
+    await AIInsight.deactivateOldInsights(req.userId);
+
     // Get historical data for context
     const history = await HealthHistory.find({ 
       userId: req.userId,
@@ -108,10 +122,11 @@ router.post('/ai-insights', requireDataConsent, async (req, res) => {
     .sort({ 'period.endDate': -1 })
     .limit(4); // Last 4 weeks
 
-    // Generate new insights
+    // Generate new insights with explicit fitness goal references
     const aiResponse = await aiService.generateHealthInsights(
       profile.toObject(),
-      history
+      history,
+      true // forceGoalReference flag
     );
 
     // Validate against restrictions
@@ -119,9 +134,6 @@ router.post('/ai-insights', requireDataConsent, async (req, res) => {
       aiResponse.insights,
       profile
     );
-
-    // Deactivate old insights
-    await AIInsight.deactivateOldInsights(req.userId);
 
     // Save new insights
     const newInsight = new AIInsight({
@@ -133,7 +145,8 @@ router.post('/ai-insights', requireDataConsent, async (req, res) => {
           trendsIdentified: identifyTrends(history),
           averageMetrics: calculateAverageMetrics(history)
         },
-        timestamp: new Date()
+        timestamp: new Date(),
+        profileLastUpdated: profile.metadata.lastUpdated
       },
       aiModel: {
         provider: 'openai',
@@ -157,9 +170,10 @@ router.post('/ai-insights', requireDataConsent, async (req, res) => {
     await newInsight.save();
 
     res.json({
-      insights: validatedInsights,
+      insights: newInsight,
       cached: false,
-      generatedAt: newInsight.metadata.generatedAt
+      generatedAt: newInsight.metadata.generatedAt,
+      message: 'Generated fresh insights based on your latest health data.'
     });
   } catch (error) {
     console.error('AI insights error:', error);
@@ -172,10 +186,11 @@ router.post('/ai-insights', requireDataConsent, async (req, res) => {
 
     if (cachedInsights) {
       return res.json({
-        insights: cachedInsights.insights,
+        insights: cachedInsights,
         cached: true,
         generatedAt: cachedInsights.metadata.generatedAt,
-        fallback: true
+        fallback: true,
+        error: 'Using cached insights due to generation error.'
       });
     }
 
@@ -196,11 +211,17 @@ router.get('/ai-insights', async (req, res) => {
       });
     }
 
+    // Check if profile has been updated since insights were generated
+    const profile = await HealthProfile.findOne({ userId: req.userId });
+    const isStale = profile && profile.metadata.lastUpdated > insights.metadata.generatedAt;
+
     res.json({
-      insights: insights.insights,
+      insights: insights,
       cached: true,
       generatedAt: insights.metadata.generatedAt,
-      expiresAt: insights.metadata.expiresAt
+      expiresAt: insights.metadata.expiresAt,
+      isStale,
+      message: isStale ? 'Your health data has changed. Consider generating new insights.' : null
     });
   } catch (error) {
     console.error('Get insights error:', error);
@@ -210,32 +231,67 @@ router.get('/ai-insights', async (req, res) => {
   }
 });
 
-// Provide feedback on AI insights
+// Provide feedback on AI insights - FIXED IMPLEMENTATION
 router.post('/ai-insights/feedback', [
   body('insightId').isString(),
-  body('helpful').optional().isBoolean(),
-  body('rating').optional().isInt({ min: 1, max: 5 }),
-  body('applied').optional().isArray()
+  body('action').isIn(['accept', 'decline', 'rate']),
+  body('recommendationId').optional().isString(),
+  body('rating').optional().isInt({ min: 1, max: 5 })
 ], async (req, res) => {
   try {
-    const { insightId, helpful, rating, applied } = req.body;
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ errors: errors.array() });
+    }
+
+    const { insightId, action, recommendationId, rating } = req.body;
 
     const insight = await AIInsight.findById(insightId);
     if (!insight || insight.userId.toString() !== req.userId) {
       return res.status(404).json({ message: 'Insight not found' });
     }
 
-    if (helpful !== undefined) insight.feedback.helpful = helpful;
-    if (rating) insight.feedback.rating = rating;
-    if (applied && applied.length > 0) {
-      insight.markAsApplied(applied);
+    // Handle different feedback actions
+    switch (action) {
+      case 'accept':
+        if (recommendationId) {
+          // Mark specific recommendation as applied
+          if (!insight.feedback.appliedRecommendations) {
+            insight.feedback.appliedRecommendations = [];
+          }
+          if (!insight.feedback.appliedRecommendations.includes(recommendationId)) {
+            insight.feedback.appliedRecommendations.push(recommendationId);
+          }
+          insight.feedback.helpful = true;
+        }
+        break;
+
+      case 'decline':
+        if (recommendationId) {
+          // Mark specific recommendation as ignored
+          if (!insight.feedback.ignoredRecommendations) {
+            insight.feedback.ignoredRecommendations = [];
+          }
+          if (!insight.feedback.ignoredRecommendations.includes(recommendationId)) {
+            insight.feedback.ignoredRecommendations.push(recommendationId);
+          }
+        }
+        break;
+
+      case 'rate':
+        if (rating) {
+          insight.feedback.rating = rating;
+        }
+        break;
     }
 
     await insight.save();
 
     res.json({
       message: 'Feedback recorded successfully',
-      effectivenessScore: insight.getEffectivenessScore()
+      effectivenessScore: insight.getEffectivenessScore(),
+      appliedCount: insight.feedback.appliedRecommendations?.length || 0,
+      ignoredCount: insight.feedback.ignoredRecommendations?.length || 0
     });
   } catch (error) {
     console.error('Feedback error:', error);
@@ -265,12 +321,12 @@ router.get('/health-summary/weekly', async (req, res) => {
   }
 });
 
-// Get monthly summary  
+// Get monthly summary
 router.get('/health-summary/monthly', async (req, res) => {
   try {
     const endDate = new Date();
     const startDate = new Date();
-    startDate.setMonth(startDate.getMonth() - 1);
+    startDate.setDate(startDate.getDate() - 30);
 
     const summary = await generateSummary(req.userId, startDate, endDate, 'monthly');
     
@@ -287,8 +343,8 @@ router.get('/health-summary/monthly', async (req, res) => {
 // HEALTH HISTORY
 // =====================
 
-// Record daily health snapshot
-router.post('/health-history', requireDataConsent, async (req, res) => {
+// Record daily snapshot
+router.post('/health-history', async (req, res) => {
   try {
     const profile = await HealthProfile.findOne({ userId: req.userId });
     
@@ -298,27 +354,62 @@ router.post('/health-history', requireDataConsent, async (req, res) => {
       });
     }
 
-    // Create snapshots for different periods
-    const dailySnapshot = await HealthHistory.createSnapshot(req.userId, profile, 'daily');
-    const weeklySnapshot = await HealthHistory.createSnapshot(req.userId, profile, 'weekly');
-    const monthlySnapshot = await HealthHistory.createSnapshot(req.userId, profile, 'monthly');
+    // Check if we already have a snapshot for today
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    
+    const existingSnapshot = await HealthHistory.findOne({
+      userId: req.userId,
+      'period.type': 'daily',
+      'period.startDate': today
+    });
 
-    // Analyze trends
-    await dailySnapshot.analyzeTrend();
-    await dailySnapshot.save();
+    if (existingSnapshot) {
+      return res.json({
+        message: 'Daily snapshot already recorded',
+        snapshot: existingSnapshot
+      });
+    }
 
-    res.json({
-      message: 'Health snapshot recorded successfully',
-      snapshot: {
-        daily: dailySnapshot,
-        weekly: weeklySnapshot,
-        monthly: monthlySnapshot
+    // Create new snapshot
+    const snapshot = new HealthHistory({
+      userId: req.userId,
+      period: {
+        type: 'daily',
+        startDate: today,
+        endDate: today
+      },
+      metrics: {
+        weight: profile.physicalMetrics.weight,
+        bmi: profile.physicalMetrics.bmi,
+        activityLevel: profile.lifestyleIndicators.activityLevel,
+        wellnessScore: profile.wellnessScore,
+        sleepHours: profile.lifestyleIndicators.sleepHours,
+        stressLevel: profile.lifestyleIndicators.stressLevel
+      },
+      aggregates: {
+        avgWeight: profile.physicalMetrics.weight.normalizedValue,
+        avgBMI: profile.physicalMetrics.bmi.value,
+        avgWellnessScore: profile.wellnessScore.overall,
+        avgSleepHours: profile.lifestyleIndicators.sleepHours,
+        avgStressLevel: profile.lifestyleIndicators.stressLevel
+      },
+      metadata: {
+        dataQuality: profile.completeness >= 80 ? 'complete' : 
+                     profile.completeness >= 50 ? 'partial' : 'minimal'
       }
     });
+
+    await snapshot.save();
+
+    res.json({
+      message: 'Daily snapshot recorded',
+      snapshot
+    });
   } catch (error) {
-    console.error('Health history error:', error);
+    console.error('Record snapshot error:', error);
     res.status(500).json({ 
-      message: 'Server error while recording health history' 
+      message: 'Server error while recording snapshot' 
     });
   }
 });
@@ -326,51 +417,69 @@ router.post('/health-history', requireDataConsent, async (req, res) => {
 // Get health history
 router.get('/health-history', async (req, res) => {
   try {
-    const { period = 'weekly', limit = 12 } = req.query;
+    const { period = 'daily', limit = 30 } = req.query;
 
     const history = await HealthHistory.find({
       userId: req.userId,
       'period.type': period
     })
-    .sort({ 'period.endDate': -1 })
+    .sort({ 'period.startDate': -1 })
     .limit(parseInt(limit));
 
-    // Calculate trends and statistics
-    const stats = calculateHistoryStatistics(history);
-
-    res.json({
-      history,
-      statistics: stats,
-      period,
-      count: history.length
-    });
+    res.json(history);
   } catch (error) {
     console.error('Get history error:', error);
     res.status(500).json({ 
-      message: 'Server error while fetching health history' 
+      message: 'Server error while fetching history' 
     });
   }
 });
 
-// Get progress chart data
+// Get progress data for specific metric
 router.get('/progress-data', async (req, res) => {
   try {
-    const { metric = 'weight', period = '3months' } = req.query;
+    const { metric = 'weight', period = 'month' } = req.query;
 
-    const dateRange = getDateRange(period);
+    // Calculate date range
+    const endDate = new Date();
+    const startDate = new Date();
+    
+    switch (period) {
+      case 'week':
+        startDate.setDate(startDate.getDate() - 7);
+        break;
+      case 'month':
+        startDate.setMonth(startDate.getMonth() - 1);
+        break;
+      case 'quarter':
+        startDate.setMonth(startDate.getMonth() - 3);
+        break;
+      case 'year':
+        startDate.setFullYear(startDate.getFullYear() - 1);
+        break;
+    }
+
+    // Get historical data
     const history = await HealthHistory.find({
       userId: req.userId,
       'period.type': 'daily',
-      'period.startDate': { $gte: dateRange.start }
+      'period.startDate': { $gte: startDate, $lte: endDate }
     }).sort({ 'period.startDate': 1 });
 
-    const chartData = formatChartData(history, metric);
+    // Extract metric data
+    const data = history.map(h => ({
+      date: h.period.startDate,
+      value: extractMetricValue(h, metric)
+    })).filter(d => d.value !== null);
+
+    // Calculate statistics
+    const stats = calculateProgressStats(data);
 
     res.json({
       metric,
       period,
-      data: chartData,
-      summary: calculateProgressSummary(chartData)
+      data,
+      stats
     });
   } catch (error) {
     console.error('Progress data error:', error);
@@ -385,85 +494,92 @@ router.get('/progress-data', async (req, res) => {
 // =====================
 
 function calculateDailyCalories(profile) {
-  // Mifflin-St Jeor Equation
   const weight = profile.physicalMetrics.weight.normalizedValue;
   const height = profile.physicalMetrics.height.normalizedValue;
   const age = profile.demographics.age;
   const gender = profile.demographics.gender;
   
+  // Mifflin-St Jeor Equation
   let bmr;
   if (gender === 'male') {
-    bmr = 10 * weight + 6.25 * height - 5 * age + 5;
+    bmr = (10 * weight) + (6.25 * height) - (5 * age) + 5;
   } else {
-    bmr = 10 * weight + 6.25 * height - 5 * age - 161;
+    bmr = (10 * weight) + (6.25 * height) - (5 * age) - 161;
   }
-
-  // Activity multiplier
-  const activityMultipliers = {
-    'sedentary': 1.2,
-    'lightly_active': 1.375,
-    'moderately_active': 1.55,
-    'very_active': 1.725,
-    'extremely_active': 1.9
+  
+  // Activity factor
+  const activityFactors = {
+    sedentary: 1.2,
+    lightly_active: 1.375,
+    moderately_active: 1.55,
+    very_active: 1.725,
+    extremely_active: 1.9
   };
-
-  const multiplier = activityMultipliers[profile.lifestyleIndicators.activityLevel] || 1.2;
-  return Math.round(bmr * multiplier);
+  
+  const factor = activityFactors[profile.lifestyleIndicators.activityLevel] || 1.2;
+  
+  return Math.round(bmr * factor);
 }
 
 function calculateWaterIntake(profile) {
   const weight = profile.physicalMetrics.weight.normalizedValue;
-  // General recommendation: 35ml per kg of body weight
-  return Math.round((weight * 35) / 1000 * 10) / 10; // Liters, rounded to 1 decimal
+  const activityLevel = profile.lifestyleIndicators.activityLevel;
+  
+  // Base water intake: 30-35ml per kg of body weight
+  let baseIntake = weight * 35;
+  
+  // Adjust for activity level
+  if (activityLevel === 'very_active' || activityLevel === 'extremely_active') {
+    baseIntake *= 1.3;
+  } else if (activityLevel === 'moderately_active') {
+    baseIntake *= 1.15;
+  }
+  
+  return Math.round(baseIntake / 1000 * 10) / 10; // Convert to liters
 }
 
 function getExerciseGoal(profile) {
-  const goal = profile.fitnessGoals.primary;
-  const baseMinutes = 150; // WHO recommendation
-  
-  const goalMultipliers = {
-    'weight_loss': 1.5,
-    'muscle_gain': 1.3,
-    'endurance': 2.0,
-    'general_fitness': 1.0,
-    'health_maintenance': 1.0
+  const fitnessGoal = profile.fitnessGoals.primary;
+  const goals = {
+    weight_loss: 300,
+    muscle_gain: 240,
+    endurance: 360,
+    flexibility: 180,
+    general_fitness: 150,
+    stress_reduction: 120,
+    health_maintenance: 150
   };
   
-  return Math.round(baseMinutes * (goalMultipliers[goal] || 1.0));
+  return goals[fitnessGoal] || 150;
 }
 
 function calculateProgressToGoal(profile) {
-  if (!profile.fitnessGoals.targetWeight || !profile.physicalMetrics.weight) {
+  if (!profile.fitnessGoals.targetWeight) {
     return null;
   }
   
   const current = profile.physicalMetrics.weight.normalizedValue;
   const target = profile.fitnessGoals.targetWeight.normalizedValue;
-  const initial = current; // Would need historical data for true initial
+  const initial = profile.initialFitnessAssessment?.weight?.normalizedValue || current;
   
-  const totalDistance = Math.abs(initial - target);
-  const progress = Math.abs(initial - current);
+  if (target === initial) return 100;
   
-  return {
-    percentage: totalDistance > 0 ? Math.round((progress / totalDistance) * 100) : 0,
-    remaining: Math.abs(current - target),
-    onTrack: Math.abs(current - target) < Math.abs(initial - target)
-  };
+  const progress = ((initial - current) / (initial - target)) * 100;
+  return Math.max(0, Math.min(100, Math.round(progress)));
 }
 
 function validateInsightsAgainstRestrictions(insights, profile) {
-  // Filter recommendations that conflict with dietary restrictions
-  if (insights.recommendations && profile.dietaryRestrictions) {
+  // Ensure insights respect dietary restrictions and medical conditions
+  if (profile.dietaryRestrictions) {
     insights.recommendations = insights.recommendations.filter(rec => {
-      // Check for allergen conflicts
-      const restrictions = [
-        ...(profile.dietaryRestrictions.allergies || []),
-        ...(profile.dietaryRestrictions.intolerances || [])
-      ].map(r => r.toLowerCase());
-      
-      const recText = (rec.description + ' ' + rec.actionItems.join(' ')).toLowerCase();
-      
-      return !restrictions.some(restriction => recText.includes(restriction));
+      // Check for dietary conflicts
+      if (profile.dietaryRestrictions.allergies?.length > 0) {
+        const hasConflict = profile.dietaryRestrictions.allergies.some(allergy =>
+          rec.description?.toLowerCase().includes(allergy.toLowerCase())
+        );
+        if (hasConflict) return false;
+      }
+      return true;
     });
   }
   
@@ -476,20 +592,28 @@ function identifyTrends(history) {
   const trends = [];
   
   // Weight trend
-  const weights = history.map(h => h.metrics?.weight?.normalizedValue).filter(Boolean);
+  const weights = history.map(h => h.aggregates?.avgWeight).filter(w => w);
   if (weights.length >= 2) {
     const weightChange = weights[0] - weights[weights.length - 1];
     if (Math.abs(weightChange) > 0.5) {
-      trends.push(weightChange > 0 ? 'weight_gain' : 'weight_loss');
+      trends.push({
+        metric: 'weight',
+        direction: weightChange > 0 ? 'decreasing' : 'increasing',
+        magnitude: Math.abs(weightChange)
+      });
     }
   }
   
-  // Activity trend
-  const activities = history.map(h => h.activity?.weeklyFrequency).filter(w => w !== undefined);
-  if (activities.length >= 2) {
-    const activityChange = activities[0] - activities[activities.length - 1];
-    if (Math.abs(activityChange) > 1) {
-      trends.push(activityChange > 0 ? 'increased_activity' : 'decreased_activity');
+  // Wellness score trend
+  const scores = history.map(h => h.aggregates?.avgWellnessScore).filter(s => s);
+  if (scores.length >= 2) {
+    const scoreChange = scores[0] - scores[scores.length - 1];
+    if (Math.abs(scoreChange) > 5) {
+      trends.push({
+        metric: 'wellness',
+        direction: scoreChange > 0 ? 'improving' : 'declining',
+        magnitude: Math.abs(scoreChange)
+      });
     }
   }
   
@@ -499,193 +623,130 @@ function identifyTrends(history) {
 function calculateAverageMetrics(history) {
   if (!history || history.length === 0) return {};
   
-  const totals = history.reduce((acc, record) => {
-    acc.weight += record.metrics?.weight?.normalizedValue || 0;
-    acc.bmi += record.metrics?.bmi?.value || 0;
-    acc.wellness += record.metrics?.wellnessScore?.overall || 0;
-    acc.count++;
-    return acc;
-  }, { weight: 0, bmi: 0, wellness: 0, count: 0 });
-  
-  return {
-    avgWeight: totals.weight / totals.count,
-    avgBMI: totals.bmi / totals.count,
-    avgWellnessScore: totals.wellness / totals.count
+  const metrics = {
+    weight: 0,
+    bmi: 0,
+    wellnessScore: 0,
+    sleepHours: 0,
+    stressLevel: 0
   };
-}
-
-async function generateSummary(userId, startDate, endDate, period) {
-  const profile = await HealthProfile.findOne({ userId });
-  const history = await HealthHistory.find({
-    userId,
-    'period.type': 'daily',
-    'period.startDate': { $gte: startDate, $lte: endDate }
+  
+  let counts = {
+    weight: 0,
+    bmi: 0,
+    wellnessScore: 0,
+    sleepHours: 0,
+    stressLevel: 0
+  };
+  
+  history.forEach(h => {
+    if (h.aggregates?.avgWeight) {
+      metrics.weight += h.aggregates.avgWeight;
+      counts.weight++;
+    }
+    if (h.aggregates?.avgBMI) {
+      metrics.bmi += h.aggregates.avgBMI;
+      counts.bmi++;
+    }
+    if (h.aggregates?.avgWellnessScore) {
+      metrics.wellnessScore += h.aggregates.avgWellnessScore;
+      counts.wellnessScore++;
+    }
+    if (h.aggregates?.avgSleepHours) {
+      metrics.sleepHours += h.aggregates.avgSleepHours;
+      counts.sleepHours++;
+    }
+    if (h.aggregates?.avgStressLevel) {
+      metrics.stressLevel += h.aggregates.avgStressLevel;
+      counts.stressLevel++;
+    }
   });
   
-  const avgMetrics = calculateAverageMetrics(history);
-  const trends = identifyTrends(history);
-  
-  return {
-    period: {
-      type: period,
-      startDate,
-      endDate
-    },
-    metrics: avgMetrics,
-    trends,
-    daysTracked: history.length,
-    wellnessScore: profile?.wellnessScore?.overall || 0,
-    achievements: identifyAchievements(history, profile),
-    recommendations: await generateSummaryRecommendations(avgMetrics, trends)
-  };
-}
-
-function calculateHistoryStatistics(history) {
-  if (!history || history.length === 0) return {};
-  
-  return {
-    averages: calculateAverageMetrics(history),
-    trends: identifyTrends(history),
-    bestWellnessScore: Math.max(...history.map(h => h.metrics?.wellnessScore?.overall || 0)),
-    worstWellnessScore: Math.min(...history.map(h => h.metrics?.wellnessScore?.overall || 0)),
-    consistency: calculateConsistency(history)
-  };
-}
-
-function getDateRange(period) {
-  const end = new Date();
-  const start = new Date();
-  
-  switch (period) {
-    case 'week':
-      start.setDate(start.getDate() - 7);
-      break;
-    case 'month':
-      start.setMonth(start.getMonth() - 1);
-      break;
-    case '3months':
-      start.setMonth(start.getMonth() - 3);
-      break;
-    case '6months':
-      start.setMonth(start.getMonth() - 6);
-      break;
-    case 'year':
-      start.setFullYear(start.getFullYear() - 1);
-      break;
-    default:
-      start.setMonth(start.getMonth() - 1);
-  }
-  
-  return { start, end };
-}
-
-function formatChartData(history, metric) {
-  return history.map(record => {
-    let value;
-    
-    switch (metric) {
-      case 'weight':
-        value = record.metrics?.weight?.normalizedValue;
-        break;
-      case 'bmi':
-        value = record.metrics?.bmi?.value;
-        break;
-      case 'wellness':
-        value = record.metrics?.wellnessScore?.overall;
-        break;
-      case 'activity':
-        value = record.activity?.weeklyFrequency;
-        break;
-      default:
-        value = 0;
+  // Calculate averages
+  Object.keys(metrics).forEach(key => {
+    if (counts[key] > 0) {
+      metrics[key] = Math.round((metrics[key] / counts[key]) * 10) / 10;
+    } else {
+      metrics[key] = null;
     }
-    
-    return {
-      date: record.period.startDate,
-      value,
-      label: new Date(record.period.startDate).toLocaleDateString()
-    };
-  }).filter(item => item.value !== undefined && item.value !== null);
+  });
+  
+  return metrics;
 }
 
-function calculateProgressSummary(data) {
+function extractMetricValue(history, metric) {
+  switch (metric) {
+    case 'weight':
+      return history.metrics?.weight?.normalizedValue || history.aggregates?.avgWeight;
+    case 'bmi':
+      return history.metrics?.bmi?.value || history.aggregates?.avgBMI;
+    case 'wellness':
+      return history.metrics?.wellnessScore?.overall || history.aggregates?.avgWellnessScore;
+    case 'sleep':
+      return history.aggregates?.avgSleepHours;
+    case 'stress':
+      return history.aggregates?.avgStressLevel;
+    default:
+      return null;
+  }
+}
+
+function calculateProgressStats(data) {
   if (!data || data.length === 0) return {};
   
   const values = data.map(d => d.value);
-  const first = values[0];
-  const last = values[values.length - 1];
-  const change = last - first;
-  const percentChange = first !== 0 ? (change / first) * 100 : 0;
+  const sum = values.reduce((a, b) => a + b, 0);
+  const avg = sum / values.length;
+  const min = Math.min(...values);
+  const max = Math.max(...values);
+  
+  // Calculate trend
+  let trend = 'stable';
+  if (values.length >= 2) {
+    const firstHalf = values.slice(0, Math.floor(values.length / 2));
+    const secondHalf = values.slice(Math.floor(values.length / 2));
+    const firstAvg = firstHalf.reduce((a, b) => a + b, 0) / firstHalf.length;
+    const secondAvg = secondHalf.reduce((a, b) => a + b, 0) / secondHalf.length;
+    
+    if (secondAvg > firstAvg * 1.05) trend = 'increasing';
+    else if (secondAvg < firstAvg * 0.95) trend = 'decreasing';
+  }
   
   return {
-    startValue: first,
-    currentValue: last,
-    change,
-    percentChange: Math.round(percentChange * 10) / 10,
-    trend: change > 0 ? 'increasing' : change < 0 ? 'decreasing' : 'stable',
-    average: values.reduce((a, b) => a + b, 0) / values.length,
-    min: Math.min(...values),
-    max: Math.max(...values)
+    average: Math.round(avg * 10) / 10,
+    min: Math.round(min * 10) / 10,
+    max: Math.round(max * 10) / 10,
+    latest: Math.round(values[values.length - 1] * 10) / 10,
+    trend,
+    dataPoints: values.length
   };
 }
 
-function identifyAchievements(history, profile) {
-  const achievements = [];
-  
-  // Check for weight loss achievement
-  if (history.length >= 2) {
-    const weightChange = history[0].metrics?.weight?.normalizedValue - 
-                        history[history.length - 1].metrics?.weight?.normalizedValue;
-    
-    if (profile?.fitnessGoals?.primary === 'weight_loss' && weightChange > 1) {
-      achievements.push({
-        title: 'Weight Loss Progress',
-        description: `Lost ${weightChange.toFixed(1)} kg`,
-        emoji: '🎯'
-      });
-    }
-  }
-  
-  // Check for consistency achievement
-  const consistentDays = history.filter(h => h.activity?.weeklyFrequency >= 3).length;
-  if (consistentDays >= 7) {
-    achievements.push({
-      title: 'Consistency Champion',
-      description: `Active for ${consistentDays} days`,
-      emoji: '🏆'
-    });
-  }
-  
-  return achievements;
-}
+async function generateSummary(userId, startDate, endDate, type) {
+  const history = await HealthHistory.find({
+    userId,
+    'period.startDate': { $gte: startDate, $lte: endDate }
+  }).sort({ 'period.startDate': -1 });
 
-async function generateSummaryRecommendations(metrics, trends) {
-  const recommendations = [];
+  const profile = await HealthProfile.findOne({ userId });
   
-  if (trends.includes('decreased_activity')) {
-    recommendations.push('Consider increasing your physical activity this week');
-  }
-  
-  if (metrics.avgBMI > 25) {
-    recommendations.push('Focus on creating a sustainable caloric deficit');
-  }
-  
-  if (metrics.avgWellnessScore < 50) {
-    recommendations.push('Review your wellness goals and make adjustments');
-  }
-  
-  return recommendations;
-}
-
-function calculateConsistency(history) {
-  if (!history || history.length < 2) return 0;
-  
-  const activeDays = history.filter(h => 
-    h.activity?.weeklyFrequency > 0 || 
-    h.metrics?.wellnessScore?.overall > 50
-  ).length;
-  
-  return Math.round((activeDays / history.length) * 100);
+  return {
+    period: {
+      type,
+      startDate,
+      endDate
+    },
+    metrics: calculateAverageMetrics(history),
+    trends: identifyTrends(history),
+    dataPoints: history.length,
+    completeness: history.length / (type === 'weekly' ? 7 : 30) * 100,
+    insights: profile ? {
+      currentBMI: profile.physicalMetrics.bmi.value,
+      currentWeight: profile.physicalMetrics.weight.normalizedValue,
+      fitnessGoal: profile.fitnessGoals.primary,
+      targetWeight: profile.fitnessGoals.targetWeight?.normalizedValue
+    } : null
+  };
 }
 
 module.exports = router;

@@ -1,107 +1,142 @@
-// backend/utils/aiService.js - Complete AI Service with Fitness Goals Integration
-const axios = require('axios');
+// utils/aiService.js - AI Service with Explicit Fitness Goal References
+const OpenAI = require('openai');
 
 class AIService {
   constructor() {
     this.apiKey = process.env.OPENAI_API_KEY;
-    this.apiUrl = 'https://api.openai.com/v1/chat/completions';
     this.model = process.env.AI_MODEL || 'gpt-3.5-turbo';
-    this.maxRetries = 3;
-    this.retryDelay = 1000; // ms
+    
+    // Check if API key is valid (not a placeholder)
+    this.enabled = !!this.apiKey && 
+                   !this.apiKey.includes('your-') && 
+                   !this.apiKey.includes('sk-your') &&
+                   this.apiKey.startsWith('sk-');
+    
+    if (this.enabled) {
+      try {
+        this.openai = new OpenAI({
+          apiKey: this.apiKey
+        });
+        console.log('✅ OpenAI initialized successfully');
+      } catch (error) {
+        console.error('❌ OpenAI initialization failed:', error.message);
+        this.enabled = false;
+      }
+    } else {
+      console.log('⚠️ OpenAI API key not configured or invalid - using fallback mode');
+    }
   }
 
-  // Generate health insights based on profile data
-  async generateHealthInsights(profileData, historicalData = null) {
+  // Generate health insights with explicit fitness goal references
+  async generateHealthInsights(profile, history = [], forceGoalReference = true) {
+    if (!this.enabled) {
+      console.log('📝 Generating fallback insights with goal references...');
+      return this.getFallbackInsights(profile);
+    }
+
     try {
-      const prompt = this.constructHealthPrompt(profileData, historicalData);
-      
       const startTime = Date.now();
-      const response = await this.makeAPICall(prompt);
+      const messages = this.buildInsightPrompt(profile, history, forceGoalReference);
+      
+      const completion = await this.openai.chat.completions.create({
+        model: this.model,
+        messages,
+        temperature: 0.7,
+        max_tokens: 2000,
+        response_format: { type: "json_object" }
+      });
+
       const processingTime = Date.now() - startTime;
-
-      if (!response || !response.choices || response.choices.length === 0) {
-        throw new Error('Invalid API response structure');
-      }
-
-      const content = response.choices[0].message.content;
-      const insights = this.parseAIResponse(content);
+      const insights = JSON.parse(completion.choices[0].message.content);
+      
+      // Ensure fitness goals are explicitly referenced
+      const enhancedInsights = this.ensureGoalReferences(insights, profile);
 
       return {
-        insights,
+        insights: enhancedInsights,
         metadata: {
           model: this.model,
+          tokens: completion.usage,
           processingTime,
-          tokens: response.usage,
-          cost: this.calculateCost(response.usage)
+          cost: this.calculateCost(completion.usage)
         },
         raw: {
-          prompt,
-          response: content
+          prompt: messages.map(m => m.content).join('\n'),
+          response: completion.choices[0].message.content
         }
       };
     } catch (error) {
       console.error('AI Service Error:', error);
-      
-      // Return cached or default insights if API fails
-      return this.getFallbackInsights(profileData);
+      console.log('📝 Falling back to offline insights generation...');
+      return this.getFallbackInsights(profile);
     }
   }
 
-  // Construct a detailed prompt for health insights WITH FITNESS GOALS
-  constructHealthPrompt(profile, history) {
+  // Build prompt with emphasis on fitness goals
+  buildInsightPrompt(profile, history, forceGoalReference) {
     const primaryGoal = profile.fitnessGoals?.primary || 'general wellness';
+    const targetWeight = profile.fitnessGoals?.targetWeight?.normalizedValue;
+    const timeline = profile.fitnessGoals?.timeline || 'Not specified';
     
-    const systemPrompt = `You are a professional health and wellness advisor. 
-    CRITICAL REQUIREMENT: You MUST explicitly reference and align ALL recommendations with the user's stated PRIMARY FITNESS GOAL.
-    The user's PRIMARY GOAL is: "${primaryGoal}"
+    const systemPrompt = `You are an expert health and wellness advisor. 
+    CRITICAL REQUIREMENT: Every single recommendation MUST explicitly reference how it helps achieve the user's specific fitness goal.
     
-    EVERY recommendation must:
-    1. Explicitly mention how it helps achieve "${primaryGoal}"
-    2. Be tailored specifically for "${primaryGoal}"
-    3. Include the goal name "${primaryGoal}" in the recommendation text
+    The user's fitness profile:
+    - PRIMARY GOAL: ${primaryGoal}
+    ${targetWeight ? `- TARGET WEIGHT: ${targetWeight} kg` : ''}
+    - TIMELINE: ${timeline}
+    - SECONDARY GOALS: ${profile.fitnessGoals?.secondary?.join(', ') || 'None'}
     
-    Be specific, evidence-based, and considerate of the user's dietary restrictions and preferences. 
-    Always prioritize safety and recommend consulting healthcare professionals for medical concerns.
+    MANDATORY: Start EVERY recommendation with how it relates to their ${primaryGoal} goal.
+    Include specific metrics and timeframes that align with their goals.
     
     Format your response as JSON with the following structure:
     {
-      "recommendations": [array of recommendation objects that MUST reference "${primaryGoal}"],
-      "warnings": [array of warning objects],
-      "achievements": [array of achievement objects related to "${primaryGoal}"],
-      "motivation": { quote, tip, challenge - all related to "${primaryGoal}" },
-      "summary": { overview, keyPoints, progressAssessment, nextSteps - all focused on "${primaryGoal}" }
+      "recommendations": [
+        {
+          "id": "unique_id",
+          "title": "Title that mentions ${primaryGoal}",
+          "description": "Must start with: 'To achieve your ${primaryGoal} goal...' and explain how this specific action helps",
+          "category": "nutrition|exercise|lifestyle|sleep|stress|medical|mental_health|general|health",
+          "priority": "high|medium|low",
+          "actionItems": ["specific actions that support ${primaryGoal}"],
+          "timeframe": "specific timeframe",
+          "difficulty": "easy|moderate|challenging",
+          "goalAlignment": "Explicit explanation of how this supports ${primaryGoal} and moves toward ${targetWeight ? `${targetWeight}kg` : 'target'}"
+        }
+      ],
+      "warnings": [],
+      "achievements": [],
+      "motivation": {
+        "quote": "Quote about ${primaryGoal}",
+        "tip": "Daily tip for ${primaryGoal}",
+        "challenge": "Weekly challenge for ${primaryGoal}"
+      },
+      "summary": {
+        "overview": "Assessment of ${primaryGoal} progress",
+        "keyPoints": ["Points about ${primaryGoal}"],
+        "progressAssessment": "Current progress toward ${primaryGoal}",
+        "nextSteps": ["Next steps for ${primaryGoal}"]
+      }
     }`;
 
     const userContext = `
-    User Profile:
+    Current Health Profile:
     - Age: ${profile.demographics?.age || 'Not specified'}
     - Gender: ${profile.demographics?.gender || 'Not specified'}
-    - Current Weight: ${profile.physicalMetrics?.weight?.value || 0} ${profile.physicalMetrics?.weight?.unit || 'kg'}
-    - Height: ${profile.physicalMetrics?.height?.value || 0} ${profile.physicalMetrics?.height?.unit || 'cm'}
+    - Current Weight: ${profile.physicalMetrics?.weight?.normalizedValue || 0} kg
+    - Height: ${profile.physicalMetrics?.height?.normalizedValue || 0} cm
     - BMI: ${profile.physicalMetrics?.bmi?.value || 0} (${profile.physicalMetrics?.bmi?.category || 'Unknown'})
     - Activity Level: ${profile.lifestyleIndicators?.activityLevel || 'Not specified'}
     - Weekly Exercise: ${profile.initialFitnessAssessment?.weeklyActivityFrequency || 0} days
-    - Exercise Types: ${profile.initialFitnessAssessment?.exerciseTypes?.join(', ') || 'None'}
     - Sleep: ${profile.lifestyleIndicators?.sleepHours || 'Not specified'} hours/night
-    - Stress Level: ${profile.lifestyleIndicators?.stressLevel || 'Not specified'}
+    - Stress Level: ${profile.lifestyleIndicators?.stressLevel || 'Not specified'}/10
+    - Wellness Score: ${profile.wellnessScore?.overall || 0}/100
     
-    FITNESS GOALS (MUST BE REFERENCED IN ALL RECOMMENDATIONS):
-    =====================================
-    PRIMARY GOAL: "${primaryGoal}"
-    Target Weight: ${profile.fitnessGoals?.targetWeight?.value || 'Not set'} ${profile.fitnessGoals?.targetWeight?.unit || 'kg'}
-    Target Date: ${profile.fitnessGoals?.targetDate ? new Date(profile.fitnessGoals.targetDate).toLocaleDateString() : 'Not set'}
-    Motivation Level: ${profile.fitnessGoals?.motivationLevel || 5}/10
-    Secondary Goals: ${profile.fitnessGoals?.secondary?.join(', ') || 'None'}
-    =====================================
-    
-    Dietary Preferences: ${profile.dietaryPreferences?.join(', ') || 'None'}
-    Dietary Restrictions: ${this.formatRestrictions(profile.dietaryRestrictions)}
-    Wellness Score: ${profile.wellnessScore?.overall || 0}/100
-    
-    ${history ? this.formatHistoricalContext(history) : ''}
-    
-    REMINDER: Every single recommendation MUST explicitly explain how it helps achieve the PRIMARY GOAL of "${primaryGoal}".
-    Example: "To support your ${primaryGoal} goal, this recommendation will help you..."`;
+    IMPORTANT: This person's primary goal is ${primaryGoal}${targetWeight ? ` with a target weight of ${targetWeight}kg` : ''}.
+    Every recommendation must explicitly explain how it helps achieve this specific goal.
+    Make the connection between each recommendation and their ${primaryGoal} goal crystal clear.
+    `;
 
     return [
       { role: 'system', content: systemPrompt },
@@ -109,479 +144,341 @@ class AIService {
     ];
   }
 
-  // Format dietary restrictions for the prompt
-  formatRestrictions(restrictions) {
-    if (!restrictions) return 'None';
+  // Ensure all recommendations reference fitness goals
+  ensureGoalReferences(insights, profile) {
+    const primaryGoal = profile.fitnessGoals?.primary || 'general wellness';
+    const targetWeight = profile.fitnessGoals?.targetWeight?.normalizedValue;
     
-    const parts = [];
-    if (restrictions.allergies?.length) {
-      parts.push(`Allergies: ${restrictions.allergies.join(', ')}`);
-    }
-    if (restrictions.intolerances?.length) {
-      parts.push(`Intolerances: ${restrictions.intolerances.join(', ')}`);
-    }
-    if (restrictions.medicalRestrictions?.length) {
-      parts.push(`Medical: ${restrictions.medicalRestrictions.join(', ')}`);
-    }
-    
-    return parts.length ? parts.join('; ') : 'None';
-  }
-
-  // Format historical data context
-  formatHistoricalContext(history) {
-    if (!history || history.length === 0) return '';
-    
-    const latest = history[0];
-    const trend = latest.comparison?.trend || 'stable';
-    const weightChange = latest.comparison?.weightChange || 0;
-    const scoreChange = latest.comparison?.wellnessScoreChange || 0;
-    
-    return `
-    Recent Trends:
-    - Weight Change: ${weightChange > 0 ? '+' : ''}${weightChange.toFixed(1)} kg
-    - Wellness Score Change: ${scoreChange > 0 ? '+' : ''}${scoreChange}
-    - Overall Trend: ${trend}
-    - Activity Pattern: ${latest.activity?.weeklyFrequency || 0} workouts/week
-    `;
-  }
-
-  // Make API call with retry logic
-  async makeAPICall(messages, retryCount = 0) {
-    try {
-      // Check if API key exists
-      if (!this.apiKey || this.apiKey === 'your-openai-key') {
-        console.log('No valid OpenAI API key, using fallback insights');
-        throw new Error('No API key configured');
-      }
-
-      const response = await axios.post(
-        this.apiUrl,
-        {
-          model: this.model,
-          messages: messages,
-          temperature: 0.7,
-          max_tokens: 1000,
-          response_format: { type: "json_object" }
-        },
-        {
-          headers: {
-            'Authorization': `Bearer ${this.apiKey}`,
-            'Content-Type': 'application/json'
-          },
-          timeout: 30000 // 30 second timeout
+    // Enhance recommendations with explicit goal references
+    if (insights.recommendations) {
+      insights.recommendations = insights.recommendations.map(rec => {
+        // Ensure description starts with goal reference
+        if (!rec.description.toLowerCase().includes(primaryGoal.replace('_', ' '))) {
+          rec.description = `To achieve your ${primaryGoal.replace('_', ' ')} goal, ${rec.description}`;
         }
-      );
-
-      return response.data;
-    } catch (error) {
-      if (retryCount < this.maxRetries && error.response?.status !== 401) {
-        // Exponential backoff
-        await new Promise(resolve => setTimeout(resolve, this.retryDelay * Math.pow(2, retryCount)));
-        return this.makeAPICall(messages, retryCount + 1);
-      }
-      
-      throw error;
+        
+        // Ensure goalAlignment is present and specific
+        if (!rec.goalAlignment) {
+          rec.goalAlignment = `This directly supports your ${primaryGoal.replace('_', ' ')} goal${
+            targetWeight ? ` and progress toward ${targetWeight}kg` : ''
+          } by ${rec.category === 'nutrition' ? 'optimizing your dietary intake' : 
+                 rec.category === 'exercise' ? 'improving your fitness level' :
+                 rec.category === 'sleep' ? 'enhancing recovery and metabolism' :
+                 'addressing key wellness factors'}`;
+        }
+        
+        // Update title to include goal reference if missing
+        if (!rec.title.toLowerCase().includes('goal') && !rec.title.toLowerCase().includes(primaryGoal.replace('_', ' '))) {
+          rec.title = `${rec.title} for ${primaryGoal.replace('_', ' ').charAt(0).toUpperCase() + primaryGoal.replace('_', ' ').slice(1)}`;
+        }
+        
+        return rec;
+      });
     }
-  }
-
-  // Parse AI response into structured format
-  parseAIResponse(content) {
-    try {
-      // Try to parse as JSON first
-      const parsed = JSON.parse(content);
-      
-      // Validate and normalize the structure
-      return {
-        recommendations: this.normalizeRecommendations(parsed.recommendations || []),
-        warnings: this.normalizeWarnings(parsed.warnings || []),
-        achievements: parsed.achievements || [],
-        motivation: parsed.motivation || this.getDefaultMotivation(),
-        summary: parsed.summary || this.getDefaultSummary()
-      };
-    } catch (error) {
-      console.error('Failed to parse AI response:', error);
-      
-      // Fallback to text parsing if JSON fails
-      return this.parseTextResponse(content);
-    }
-  }
-
-  // Normalize recommendations structure
-  normalizeRecommendations(recommendations) {
-    return recommendations.map((rec, index) => ({
-      id: `rec_${Date.now()}_${index}`,
-      category: rec.category || 'general',
-      priority: rec.priority || 'medium',
-      title: rec.title || 'Health Recommendation',
-      description: rec.description || rec.message || rec.text || '',
-      rationale: rec.rationale || '',
-      actionItems: Array.isArray(rec.actionItems) ? rec.actionItems : [],
-      timeframe: rec.timeframe || '2-4 weeks',
-      difficulty: rec.difficulty || 'moderate',
-      expectedOutcome: rec.expectedOutcome || '',
-      metrics: rec.metrics || []
-    }));
-  }
-
-  // Normalize warnings structure
-  normalizeWarnings(warnings) {
-    return warnings.map((warning, index) => ({
-      id: `warn_${Date.now()}_${index}`,
-      severity: warning.severity || 'medium',
-      category: warning.category || 'health',
-      message: warning.message || warning.text || '',
-      recommendation: warning.recommendation || 'Consult with a healthcare professional'
-    }));
-  }
-
-  // Get fallback insights when API fails - WITH FITNESS GOALS
-  getFallbackInsights(profile) {
-    const bmi = profile.physicalMetrics?.bmi?.value || 25;
-    const activityLevel = profile.initialFitnessAssessment?.weeklyActivityFrequency || 0;
-    const goal = profile.fitnessGoals?.primary || 'general-health';
-    const targetWeight = profile.fitnessGoals?.targetWeight?.value;
-    const currentWeight = profile.physicalMetrics?.weight?.value;
     
+    return insights;
+  }
+
+  // Calculate cost for OpenAI usage
+  calculateCost(usage) {
+    if (!usage) return 0;
+    
+    // GPT-3.5-turbo pricing (as of 2024)
+    const inputCost = 0.0005 / 1000; // $0.0005 per 1K tokens
+    const outputCost = 0.0015 / 1000; // $0.0015 per 1K tokens
+    
+    return {
+      input: (usage.prompt_tokens || 0) * inputCost,
+      output: (usage.completion_tokens || 0) * outputCost,
+      total: ((usage.prompt_tokens || 0) * inputCost) + ((usage.completion_tokens || 0) * outputCost)
+    };
+  }
+
+  // Get fallback insights when API is unavailable
+  getFallbackInsights(profile) {
+    const goal = profile.fitnessGoals?.primary || 'general_wellness';
+    const targetWeight = profile.fitnessGoals?.targetWeight?.normalizedValue;
+    const currentWeight = profile.physicalMetrics?.weight?.normalizedValue || 70;
+    const height = profile.physicalMetrics?.height?.normalizedValue || 170;
+    const bmi = profile.physicalMetrics?.bmi?.value || (currentWeight / Math.pow(height / 100, 2));
+    const activityLevel = profile.initialFitnessAssessment?.weeklyActivityFrequency || 0;
+    
+    // Create dynamic recommendations based on actual user data
     const recommendations = [];
     
-    // PRIMARY GOAL-SPECIFIC RECOMMENDATIONS
-    if (goal === 'weight-loss' || goal === 'weight_loss') {
-      recommendations.push({
-        id: 'goal_primary_1',
-        category: 'fitness_goal',
-        priority: 'high',
-        title: `Personalized Weight Loss Strategy`,
-        description: `To achieve your weight loss goal and reach your target weight of ${targetWeight || 'your ideal'} kg, you need a structured approach combining nutrition and exercise.`,
-        rationale: `This directly supports your primary goal of weight loss.`,
+    // Goal-specific primary recommendation
+    const goalRecommendations = {
+      weight_loss: {
+        title: 'Caloric Deficit Strategy for Weight Loss',
+        description: `To achieve your weight loss goal and reach ${targetWeight || 'your target'}kg, implement a moderate caloric deficit of 300-500 calories daily. This sustainable approach will help you lose 0.5-1kg per week while preserving muscle mass.`,
         actionItems: [
-          `Create a 500-750 calorie daily deficit to support your weight loss goal`,
-          `Combine cardio (30 min/day) with strength training for optimal weight loss`,
-          `Track progress weekly to ensure you're on track for weight loss`,
-          `Adjust portions to align with your weight loss targets`
-        ],
-        timeframe: '4-6 weeks',
-        difficulty: 'moderate',
-        expectedOutcome: `1-2 lbs weekly weight loss toward your goal`
-      });
-
+          `Track daily calorie intake to maintain deficit for weight loss`,
+          `Focus on protein intake (1.6-2g per kg body weight) to preserve muscle`,
+          `Include 30 minutes of cardio 4-5 times weekly`,
+          `Monitor weekly weight changes toward ${targetWeight || 'target'}kg`
+        ]
+      },
+      muscle_gain: {
+        title: 'Progressive Overload for Muscle Gain',
+        description: `To achieve your muscle gain goal, implement progressive resistance training with a slight caloric surplus. This will support muscle growth while minimizing fat gain.`,
+        actionItems: [
+          'Increase training weights by 2.5-5% weekly',
+          'Consume 300-500 calories above maintenance',
+          'Ensure 1.8-2.2g protein per kg body weight',
+          'Track strength gains and body composition changes'
+        ]
+      },
+      endurance_improvement: {
+        title: 'Cardiovascular Base Building for Endurance',
+        description: `To achieve your endurance improvement goal, gradually increase your aerobic capacity through structured training. This systematic approach will enhance your cardiovascular fitness.`,
+        actionItems: [
+          'Start with 3x 30-minute moderate cardio sessions weekly',
+          'Increase duration by 10% each week',
+          'Include one interval training session weekly',
+          'Monitor resting heart rate improvements'
+        ]
+      },
+      general_wellness: {
+        title: 'Balanced Approach for General Wellness',
+        description: `To achieve your general wellness goal, focus on creating sustainable healthy habits across nutrition, exercise, and lifestyle factors.`,
+        actionItems: [
+          'Maintain consistent exercise routine 3-4 times weekly',
+          'Follow balanced nutrition with whole foods focus',
+          'Prioritize 7-9 hours quality sleep nightly',
+          'Practice stress management techniques daily'
+        ]
+      }
+    };
+    
+    // Add primary goal recommendation
+    const primaryRec = goalRecommendations[goal] || goalRecommendations.general_wellness;
+    recommendations.push({
+      id: 'goal_primary',
+      ...primaryRec,
+      category: 'exercise',
+      priority: 'high',
+      timeframe: '4-6 weeks',
+      difficulty: 'moderate',
+      goalAlignment: `This is your primary strategy for achieving ${goal.replace('_', ' ')} ${targetWeight ? `and reaching ${targetWeight}kg` : ''}`
+    });
+    
+    // BMI-based recommendation with goal alignment
+    if (bmi > 25 && goal === 'weight_loss') {
       recommendations.push({
-        id: 'goal_nutrition_1',
+        id: 'bmi_weight',
+        title: 'BMI Optimization for Weight Loss Success',
+        description: `To achieve your weight loss goal of reaching ${targetWeight || 'a healthy weight'}kg, focus on reducing your BMI from ${bmi.toFixed(1)} to a healthier range. A 5-10% weight reduction significantly improves health markers.`,
         category: 'nutrition',
         priority: 'high',
-        title: `Nutrition Plan for Weight Loss Success`,
-        description: `Your weight loss goal requires specific nutritional adjustments. Focus on high-protein, moderate-carb meals to support your weight loss while preserving muscle mass.`,
         actionItems: [
-          `Eat 1.6g protein per kg body weight to support weight loss`,
-          `Include fiber-rich foods to stay full during weight loss`,
-          `Time carbs around workouts for energy while losing weight`
-        ],
-        timeframe: '2-4 weeks',
-        difficulty: 'easy'
-      });
-    } else if (goal === 'muscle-gain' || goal === 'muscle_gain') {
-      recommendations.push({
-        id: 'goal_primary_2',
-        category: 'fitness_goal',
-        priority: 'high',
-        title: `Muscle Building Program for Your Goal`,
-        description: `Your muscle gain goal requires progressive overload training and optimal nutrition. Target weight: ${targetWeight || 'increase from current'} kg through lean muscle mass.`,
-        rationale: `Specifically designed for your muscle gain objective.`,
-        actionItems: [
-          `Consume 1.8-2.2g protein per kg for muscle gain`,
-          `Progressive overload training 3-4x/week for muscle growth`,
-          `500 calorie surplus to support your muscle gain goal`,
-          `8+ hours sleep for muscle recovery and growth`
+          `Create a ${Math.round((currentWeight - (targetWeight || currentWeight * 0.95)) * 7700 / 90)} calorie daily deficit`,
+          'Replace processed foods with whole foods',
+          'Track progress weekly toward target weight',
+          'Adjust calorie intake based on weekly results'
         ],
         timeframe: '8-12 weeks',
         difficulty: 'moderate',
-        expectedOutcome: `0.5-1 kg monthly muscle gain`
-      });
-
-      recommendations.push({
-        id: 'goal_training_1',
-        category: 'exercise',
-        priority: 'high',
-        title: `Strength Training for Maximum Muscle Gain`,
-        description: `To achieve your muscle gain goal, focus on compound movements with progressive overload.`,
-        actionItems: [
-          `Squat, deadlift, bench press for muscle gain foundation`,
-          `Increase weights by 2.5-5% weekly for muscle growth`,
-          `4-5 sets of 6-12 reps optimal for muscle gain`
-        ],
-        timeframe: '4-6 weeks',
-        difficulty: 'moderate'
-      });
-    } else if (goal === 'endurance' || goal === 'improve-endurance') {
-      recommendations.push({
-        id: 'goal_primary_3',
-        category: 'fitness_goal',
-        priority: 'high',
-        title: `Endurance Building Program`,
-        description: `Your endurance goal requires systematic cardiovascular training with progressive volume increases.`,
-        rationale: `Tailored for your endurance improvement goal.`,
-        actionItems: [
-          `Increase weekly cardio volume by 10% for endurance`,
-          `Include 2 interval sessions weekly for endurance gains`,
-          `Long slow distance training for endurance base`,
-          `Cross-train to support endurance without injury`
-        ],
-        timeframe: '6-8 weeks',
-        difficulty: 'moderate',
-        expectedOutcome: `20-30% endurance improvement`
-      });
-    } else if (goal === 'strength' || goal === 'build-strength') {
-      recommendations.push({
-        id: 'goal_primary_4',
-        category: 'fitness_goal',
-        priority: 'high',
-        title: `Strength Building Protocol`,
-        description: `Your strength building goal requires heavy resistance training with adequate recovery.`,
-        rationale: `Optimized for your strength building objective.`,
-        actionItems: [
-          `Train at 85-95% 1RM for strength gains`,
-          `3-5 reps per set for maximum strength`,
-          `5+ minutes rest between sets for strength recovery`,
-          `Focus on compound lifts for overall strength`
-        ],
-        timeframe: '8-10 weeks',
-        difficulty: 'hard',
-        expectedOutcome: `10-20% strength increase`
-      });
-    } else {
-      // General health/wellness
-      recommendations.push({
-        id: 'goal_primary_5',
-        category: 'fitness_goal',
-        priority: 'high',
-        title: `Balanced Wellness Plan for ${goal.replace(/-|_/g, ' ')}`,
-        description: `Your goal of ${goal.replace(/-|_/g, ' ')} requires a balanced approach to nutrition, exercise, and recovery.`,
-        actionItems: [
-          `150 minutes moderate exercise weekly for ${goal.replace(/-|_/g, ' ')}`,
-          `Balanced nutrition supporting ${goal.replace(/-|_/g, ' ')}`,
-          `7-9 hours quality sleep for ${goal.replace(/-|_/g, ' ')}`,
-          `Stress management for optimal ${goal.replace(/-|_/g, ' ')}`
-        ],
-        timeframe: '4-6 weeks',
-        difficulty: 'moderate'
+        goalAlignment: `Reducing BMI is essential for your weight loss goal and reaching ${targetWeight || 'target'}kg safely`
       });
     }
     
-    // Additional recommendations that reference the primary goal
+    // Activity-based recommendation with goal context
     if (activityLevel < 3) {
       recommendations.push({
-        id: 'activity_1',
+        id: 'activity_increase',
+        title: `Increase Activity for ${goal.replace('_', ' ').charAt(0).toUpperCase() + goal.replace('_', ' ').slice(1)}`,
+        description: `To achieve your ${goal.replace('_', ' ')} goal${targetWeight ? ` and reach ${targetWeight}kg` : ''}, increase your weekly exercise frequency from ${activityLevel} to at least 4-5 days. Regular activity is crucial for sustainable results.`,
         category: 'exercise',
-        priority: 'medium',
-        title: `Increase Activity for ${goal.replace(/-|_/g, ' ')} Success`,
-        description: `Your current activity level may be limiting your ${goal.replace(/-|_/g, ' ')} progress. Increasing exercise frequency will accelerate your ${goal.replace(/-|_/g, ' ')} results.`,
+        priority: activityLevel === 0 ? 'high' : 'medium',
         actionItems: [
-          `Add 2 more weekly workouts to support ${goal.replace(/-|_/g, ' ')}`,
-          `Morning walks to boost metabolism for ${goal.replace(/-|_/g, ' ')}`,
-          `Active recovery days to maintain progress toward ${goal.replace(/-|_/g, ' ')}`
+          `Add ${3 - activityLevel} more exercise sessions weekly`,
+          `Start with 20-minute sessions and gradually increase`,
+          `Mix cardio and strength training for ${goal.replace('_', ' ')}`,
+          'Track workout consistency in relation to goal progress'
         ],
         timeframe: '2-3 weeks',
-        difficulty: 'easy'
+        difficulty: 'easy',
+        goalAlignment: `Increasing activity frequency accelerates ${goal.replace('_', ' ')} and supports reaching ${targetWeight || 'your target'}kg`
       });
     }
-
-    // Sleep recommendation tied to goal
-    recommendations.push({
-      id: 'recovery_1',
-      category: 'lifestyle',
-      priority: 'medium',
-      title: `Optimize Sleep for ${goal.replace(/-|_/g, ' ')}`,
-      description: `Quality sleep is essential for achieving your ${goal.replace(/-|_/g, ' ')} goal. Poor sleep can sabotage your ${goal.replace(/-|_/g, ' ')} efforts.`,
-      actionItems: [
-        `7-9 hours nightly for optimal ${goal.replace(/-|_/g, ' ')} results`,
-        `Consistent sleep schedule supports ${goal.replace(/-|_/g, ' ')}`,
-        `No screens 1 hour before bed for better ${goal.replace(/-|_/g, ' ')} recovery`
-      ],
-      timeframe: '1-2 weeks',
-      difficulty: 'easy'
-    });
+    
+    // Sleep optimization for goal achievement
+    if (profile.lifestyleIndicators?.sleepHours < 7) {
+      recommendations.push({
+        id: 'sleep_optimization',
+        title: `Sleep Optimization for ${goal.replace('_', ' ').charAt(0).toUpperCase() + goal.replace('_', ' ').slice(1)}`,
+        description: `To achieve your ${goal.replace('_', ' ')} goal, improve sleep from ${profile.lifestyleIndicators?.sleepHours || 'insufficient'} to 7-9 hours nightly. Quality sleep is essential for recovery, metabolism, and reaching ${targetWeight || 'your target'}kg.`,
+        category: 'sleep',
+        priority: 'high',
+        actionItems: [
+          'Set consistent bedtime 8 hours before wake time',
+          'Create pre-sleep routine starting 1 hour before bed',
+          'Avoid screens and caffeine 2 hours before sleep',
+          `Track how sleep quality affects ${goal.replace('_', ' ')} progress`
+        ],
+        timeframe: '1-2 weeks',
+        difficulty: 'easy',
+        goalAlignment: `Adequate sleep optimizes hormones crucial for ${goal.replace('_', ' ')} and achieving ${targetWeight || 'target weight'}kg`
+      });
+    }
+    
+    // Stress management for goal success
+    if (profile.lifestyleIndicators?.stressLevel > 6) {
+      recommendations.push({
+        id: 'stress_management',
+        title: `Stress Reduction for ${goal.replace('_', ' ').charAt(0).toUpperCase() + goal.replace('_', ' ').slice(1)} Success`,
+        description: `To achieve your ${goal.replace('_', ' ')} goal, reduce stress levels from ${profile.lifestyleIndicators?.stressLevel}/10 to below 5/10. High stress hormones can sabotage ${goal === 'weight_loss' ? 'weight loss' : goal === 'muscle_gain' ? 'muscle growth' : 'fitness progress'}.`,
+        category: 'stress',
+        priority: 'medium',
+        actionItems: [
+          'Practice 10-minute daily meditation or breathing exercises',
+          'Schedule regular breaks during work for stress relief',
+          `Monitor how stress impacts ${goal.replace('_', ' ')} progress`,
+          'Consider yoga or tai chi 2-3 times weekly'
+        ],
+        timeframe: '2-3 weeks',
+        difficulty: 'easy',
+        goalAlignment: `Managing stress improves cortisol levels, essential for ${goal.replace('_', ' ')} and reaching ${targetWeight || 'optimal weight'}kg`
+      });
+    }
+    
+    // Create achievements based on current metrics
+    const achievements = [];
+    if (profile.wellnessScore?.overall > 70) {
+      achievements.push({
+        title: `Wellness Leader for ${goal.replace('_', ' ').charAt(0).toUpperCase() + goal.replace('_', ' ').slice(1)}`,
+        description: `Maintaining excellent wellness score while pursuing ${goal.replace('_', ' ')}`,
+        metric: 'Wellness Score',
+        improvement: `${profile.wellnessScore.overall}/100`,
+        emoji: '🏆'
+      });
+    }
+    
+    if (activityLevel >= 4) {
+      achievements.push({
+        title: 'Consistency Champion',
+        description: `Exercising ${activityLevel} days/week supports your ${goal.replace('_', ' ')} goal`,
+        metric: 'Weekly Activity',
+        improvement: `${activityLevel} days/week`,
+        emoji: '💪'
+      });
+    }
+    
+    // Warnings based on health risks
+    const warnings = [];
+    if (bmi > 30) {
+      warnings.push({
+        type: 'alert',
+        message: `BMI of ${bmi.toFixed(1)} may complicate ${goal.replace('_', ' ')} progress`,
+        reason: `High BMI increases health risks and may require modified approach to ${goal.replace('_', ' ')}`,
+        suggestedAction: `Consult healthcare provider for personalized ${goal.replace('_', ' ')} plan considering current BMI`
+      });
+    }
     
     return {
       insights: {
-        recommendations,
-        warnings: this.generateGoalWarnings(profile),
-        achievements: this.generateGoalAchievements(profile),
+        recommendations: recommendations.slice(0, 5),
+        warnings,
+        achievements,
         motivation: {
-          quote: `"Success in ${goal.replace(/-|_/g, ' ')} comes from consistency, not perfection."`,
-          tip: `Track your ${goal.replace(/-|_/g, ' ')} progress daily for best results.`,
-          challenge: `This week, take three specific actions toward your ${goal.replace(/-|_/g, ' ')} goal.`
+          quote: `"Every step toward ${goal.replace('_', ' ')} ${targetWeight ? `and ${targetWeight}kg` : ''} is progress worth celebrating."`,
+          tip: `Today, focus on one action that directly supports your ${goal.replace('_', ' ')} goal`,
+          challenge: `This week: Complete all planned workouts to accelerate ${goal.replace('_', ' ')} progress`
         },
         summary: {
-          overview: `Your personalized plan focuses on achieving your primary goal of ${goal.replace(/-|_/g, ' ')}. Every recommendation is specifically tailored to help you reach this objective.`,
+          overview: `Your personalized plan for ${goal.replace('_', ' ')}${targetWeight ? ` targets ${targetWeight}kg` : ''}. Current weight: ${currentWeight}kg, BMI: ${bmi.toFixed(1)}.`,
           keyPoints: [
-            `Primary focus: ${goal.replace(/-|_/g, ' ')}`,
-            `Target weight: ${targetWeight || 'To be determined'} kg`,
-            `Current weight: ${currentWeight || 'Not specified'} kg`,
-            `Weekly exercise: ${activityLevel} days`
+            `Primary goal: ${goal.replace('_', ' ')}${targetWeight ? ` to ${targetWeight}kg` : ''}`,
+            `Current metrics: ${currentWeight}kg, BMI ${bmi.toFixed(1)}`,
+            `Weekly activity: ${activityLevel} days`,
+            `Focus areas: ${recommendations.map(r => r.category).slice(0, 3).join(', ')}`
           ],
-          progressAssessment: this.assessGoalProgress(profile),
+          progressAssessment: this.getProgressAssessment(profile, goal, targetWeight, currentWeight),
           nextSteps: [
-            `Continue focusing on ${goal.replace(/-|_/g, ' ')} with daily actions`,
-            `Track progress metrics specific to ${goal.replace(/-|_/g, ' ')}`,
-            `Adjust intensity based on ${goal.replace(/-|_/g, ' ')} progress`,
-            `Review and update ${goal.replace(/-|_/g, ' ')} targets monthly`
+            `Implement highest priority ${goal.replace('_', ' ')} recommendations`,
+            `Track daily progress toward ${targetWeight || 'target'}kg`,
+            `Adjust plan based on weekly results`,
+            `Generate new insights after implementing changes`
           ]
         }
       },
       metadata: {
         model: 'fallback',
+        tokens: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
         processingTime: 0,
-        tokens: null,
         cost: 0
       },
       raw: {
-        prompt: 'Fallback insights generated',
-        response: 'Using cached template'
+        prompt: 'Fallback mode - API unavailable or invalid key',
+        response: 'Generated goal-specific fallback insights'
       }
     };
   }
 
-  // Generate warnings based on goals
-  generateGoalWarnings(profile) {
-    const warnings = [];
-    const goal = profile.fitnessGoals?.primary || 'general-health';
-    const bmi = profile.physicalMetrics?.bmi?.value;
-
-    if (goal === 'weight-loss' && bmi < 18.5) {
-      warnings.push({
-        id: 'warn_1',
-        severity: 'high',
-        category: 'health',
-        message: `Your BMI is already low. Weight loss may not be appropriate. Consider consulting a healthcare provider about your weight loss goal.`,
-        recommendation: 'Reassess your fitness goals with professional guidance'
-      });
-    }
-
-    if (goal === 'muscle-gain' && profile.lifestyleIndicators?.sleepHours < 6) {
-      warnings.push({
-        id: 'warn_2',
-        severity: 'medium',
-        category: 'recovery',
-        message: `Insufficient sleep will severely limit your muscle gain progress. You need 7-9 hours for optimal muscle growth.`,
-        recommendation: 'Prioritize sleep to achieve your muscle gain goal'
-      });
-    }
-
-    return warnings;
-  }
-
-  // Generate achievements based on goals
-  generateGoalAchievements(profile) {
-    const achievements = [];
-    const goal = profile.fitnessGoals?.primary || 'general-health';
-
-    if (profile.metadata?.profileCompleteness >= 80) {
-      achievements.push({
-        id: 'ach_1',
-        title: 'Profile Complete',
-        description: `Great job! Your detailed profile helps us optimize recommendations for your ${goal.replace(/-|_/g, ' ')} goal.`,
-        icon: '✅'
-      });
-    }
-
-    if (profile.initialFitnessAssessment?.weeklyActivityFrequency >= 3) {
-      achievements.push({
-        id: 'ach_2',
-        title: 'Consistent Exercise',
-        description: `Exercising ${profile.initialFitnessAssessment.weeklyActivityFrequency} times per week strongly supports your ${goal.replace(/-|_/g, ' ')} goal!`,
-        icon: '💪'
-      });
-    }
-
-    return achievements;
-  }
-
-  // Assess progress toward goal
-  assessGoalProgress(profile) {
-    const goal = profile.fitnessGoals?.primary || 'general-health';
-    const targetWeight = profile.fitnessGoals?.targetWeight?.value;
-    const currentWeight = profile.physicalMetrics?.weight?.value;
-    
+  // Get detailed progress assessment
+  getProgressAssessment(profile, goal, targetWeight, currentWeight) {
     if (!targetWeight || !currentWeight) {
-      return `Set specific targets to track ${goal.replace(/-|_/g, ' ')} progress effectively.`;
+      return `Starting your ${goal.replace('_', ' ')} journey. Set specific targets for better tracking.`;
     }
-
+    
     const difference = targetWeight - currentWeight;
+    const absDifference = Math.abs(difference);
     
-    if (goal === 'weight-loss') {
+    if (goal === 'weight_loss') {
       if (difference < 0) {
-        const progress = Math.abs(difference);
-        return `You need to lose ${progress.toFixed(1)} kg to reach your weight loss target. Stay consistent!`;
+        const progress = ((currentWeight - targetWeight) / absDifference) * 100;
+        if (absDifference < 2) {
+          return `Excellent! You're within 2kg of your ${targetWeight}kg weight loss goal. Focus on maintenance strategies.`;
+        } else if (absDifference < 5) {
+          return `Great progress! ${absDifference.toFixed(1)}kg to go to reach ${targetWeight}kg. You're on track for weight loss success.`;
+        } else {
+          return `${absDifference.toFixed(1)}kg to lose to reach ${targetWeight}kg. With consistent effort, you'll achieve your weight loss goal.`;
+        }
       } else {
-        return `You've exceeded your weight loss goal! Consider setting a new target.`;
+        return `Current weight (${currentWeight}kg) is below target (${targetWeight}kg). Consider adjusting your weight loss target.`;
       }
-    } else if (goal === 'muscle-gain') {
+    } else if (goal === 'muscle_gain') {
       if (difference > 0) {
-        return `You need to gain ${difference.toFixed(1)} kg to reach your muscle gain target. Keep pushing!`;
+        if (absDifference < 2) {
+          return `Close to your ${targetWeight}kg muscle gain target! Focus on progressive overload and nutrition.`;
+        } else {
+          return `${absDifference.toFixed(1)}kg to gain to reach ${targetWeight}kg. Ensure adequate protein and training intensity.`;
+        }
       } else {
-        return `You've reached your muscle gain target! Time to set new strength goals.`;
+        return `Current weight exceeds muscle gain target. Focus on body composition rather than just weight.`;
+      }
+    } else {
+      return `Working toward ${goal.replace('_', ' ')} with ${targetWeight}kg as your target weight. Current: ${currentWeight}kg.`;
+    }
+  }
+
+  // Format dietary restrictions for prompts
+  formatRestrictions(restrictions) {
+    if (!restrictions || Object.keys(restrictions).length === 0) {
+      return 'None';
+    }
+    
+    const activeRestrictions = [];
+    for (const [key, value] of Object.entries(restrictions)) {
+      if (value === true) {
+        activeRestrictions.push(key.replace('_', ' '));
       }
     }
-
-    return `Continue working toward your ${goal.replace(/-|_/g, ' ')} goal with consistent effort.`;
+    
+    return activeRestrictions.length > 0 ? activeRestrictions.join(', ') : 'None';
   }
 
-  // Parse text response if JSON fails
-  parseTextResponse(content) {
-    // Basic text parsing logic
-    return {
-      recommendations: [{
-        id: 'text_1',
-        category: 'general',
-        priority: 'medium',
-        title: 'Health Recommendation',
-        description: content.substring(0, 500),
-        actionItems: [],
-        timeframe: '2-4 weeks',
-        difficulty: 'moderate'
-      }],
-      warnings: [],
-      achievements: [],
-      motivation: this.getDefaultMotivation(),
-      summary: this.getDefaultSummary()
-    };
-  }
-
-  // Default motivation object
-  getDefaultMotivation() {
-    return {
-      quote: "Every step forward is progress, no matter how small.",
-      tip: "Focus on consistency over perfection.",
-      challenge: "Try one new healthy habit this week."
-    };
-  }
-
-  // Default summary object
-  getDefaultSummary() {
-    return {
-      overview: "Continue focusing on your health and wellness goals.",
-      keyPoints: ["Stay consistent", "Track progress", "Adjust as needed"],
-      progressAssessment: "On track",
-      nextSteps: ["Review goals", "Maintain routine", "Monitor results"]
-    };
-  }
-
-  // Calculate API cost
-  calculateCost(usage) {
-    if (!usage) return 0;
+  // Format historical context for prompts
+  formatHistoricalContext(history) {
+    if (!history || history.length === 0) {
+      return 'No historical data available.';
+    }
     
-    const prices = {
-      'gpt-3.5-turbo': { prompt: 0.0015, completion: 0.002 },
-      'gpt-4': { prompt: 0.03, completion: 0.06 }
-    };
-    
-    const modelPrices = prices[this.model] || prices['gpt-3.5-turbo'];
-    
-    const promptCost = (usage.prompt_tokens / 1000) * modelPrices.prompt;
-    const completionCost = (usage.completion_tokens / 1000) * modelPrices.completion;
-    
-    return Math.round((promptCost + completionCost) * 10000) / 100; // Return in cents
+    return `
+    Historical Trends (Last ${history.length} weeks):
+    ${history.map(h => `- Week ending ${h.period.endDate}: Wellness Score ${h.aggregatedMetrics?.wellnessScore || 'N/A'}`).join('\n')}
+    `;
   }
 }
 
-// Export singleton instance
 module.exports = new AIService();
