@@ -1,32 +1,19 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { ShoppingCart, Check, RefreshCw, Download, ChevronRight, ChevronDown, Info, Trash2, Plus, Minus } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 
 const ShoppingListPage = () => {
   const navigate = useNavigate();
   const [shoppingList, setShoppingList] = useState(null);
+  const [originalShoppingList, setOriginalShoppingList] = useState(null);
   const [loading, setLoading] = useState(false);
   const [checkedItems, setCheckedItems] = useState(new Set());
   const [excludeItems, setExcludeItems] = useState('');
   const [expandedCategories, setExpandedCategories] = useState({});
   const [showExcludeForm, setShowExcludeForm] = useState(false);
+  const [removedItems, setRemovedItems] = useState(new Set());
 
-  useEffect(() => {
-    generateShoppingList();
-  }, []);
-
-  // Auto-expand categories on load
-  useEffect(() => {
-    if (shoppingList?.categories) {
-      const allExpanded = {};
-      Object.keys(shoppingList.categories).forEach(cat => {
-        allExpanded[cat] = true;
-      });
-      setExpandedCategories(allExpanded);
-    }
-  }, [shoppingList]);
-
-  const generateShoppingList = async () => {
+  const generateShoppingList = useCallback(async () => {
     setLoading(true);
     try {
       const token = localStorage.getItem('token');
@@ -41,7 +28,9 @@ const ShoppingListPage = () => {
       if (response.ok) {
         const data = await response.json();
         setShoppingList(data.shoppingList);
+        setOriginalShoppingList(JSON.parse(JSON.stringify(data.shoppingList))); // Deep copy
         setCheckedItems(new Set()); // Reset checked items on regenerate
+        setRemovedItems(new Set()); // Reset removed items
       } else {
         const error = await response.json();
         console.error('Shopping list error:', error);
@@ -53,7 +42,22 @@ const ShoppingListPage = () => {
     } finally {
       setLoading(false);
     }
-  };
+  }, [excludeItems]);
+
+  useEffect(() => {
+    generateShoppingList();
+  }, [generateShoppingList]);
+
+  // Auto-expand categories on load
+  useEffect(() => {
+    if (shoppingList?.categories) {
+      const allExpanded = {};
+      Object.keys(shoppingList.categories).forEach(cat => {
+        allExpanded[cat] = true;
+      });
+      setExpandedCategories(allExpanded);
+    }
+  }, [shoppingList]);
 
   const toggleItem = (itemId) => {
     const newChecked = new Set(checkedItems);
@@ -85,11 +89,80 @@ const ShoppingListPage = () => {
     setCheckedItems(new Set());
   };
 
+  // Format quantity for display
+  const formatQuantity = (quantity, unit) => {
+    if (unit === 'unit' && quantity === 1) {
+      return '1';
+    }
+    if (unit === 'unit' || unit === 'slice' || unit === 'piece') {
+      return Math.ceil(quantity).toString();
+    }
+    if (quantity < 10) {
+      return (Math.round(quantity * 10) / 10).toString();
+    }
+    return Math.round(quantity).toString();
+  };
+
+  // Adjust item quantity
+  const adjustQuantity = (category, itemId, change) => {
+    setShoppingList(prevList => {
+      const newList = JSON.parse(JSON.stringify(prevList)); // Deep copy
+      const item = newList.categories[category].find(i => i.id === itemId);
+      
+      if (item) {
+        const newQuantity = Math.max(1, item.quantity + change);
+        item.quantity = newQuantity;
+        item.displayQuantity = formatQuantity(newQuantity, item.unit);
+      }
+      
+      return newList;
+    });
+  };
+
+  // Remove item from list
+  const removeItem = (category, itemId) => {
+    setShoppingList(prevList => {
+      const newList = JSON.parse(JSON.stringify(prevList)); // Deep copy
+      newList.categories[category] = newList.categories[category].filter(i => i.id !== itemId);
+      
+      // Remove category if empty
+      if (newList.categories[category].length === 0) {
+        delete newList.categories[category];
+      }
+      
+      // Recalculate total items
+      newList.totalItems = Object.values(newList.categories).reduce(
+        (sum, items) => sum + items.length, 0
+      );
+      
+      return newList;
+    });
+    
+    // Track removed items
+    setRemovedItems(prev => new Set([...prev, itemId]));
+    
+    // Remove from checked items if it was checked
+    setCheckedItems(prev => {
+      const newSet = new Set(prev);
+      newSet.delete(itemId);
+      return newSet;
+    });
+  };
+
+  // Restore all removed items
+  const restoreRemovedItems = () => {
+    if (originalShoppingList) {
+      setShoppingList(JSON.parse(JSON.stringify(originalShoppingList)));
+      setRemovedItems(new Set());
+      setCheckedItems(new Set());
+    }
+  };
+
   const exportList = () => {
     if (!shoppingList) return;
 
     let text = "SHOPPING LIST\n";
-    text += "=" .repeat(50) + "\n";
+    text += "=".repeat(50) + "\n";
     text += `Generated: ${new Date(shoppingList.generatedAt).toLocaleDateString()}\n`;
     text += `Week of: ${new Date(shoppingList.weekOf).toLocaleDateString()}\n\n`;
 
@@ -251,6 +324,7 @@ const ShoppingListPage = () => {
               <ul className="list-disc list-inside space-y-0.5">
                 <li>Ingredients aggregated from {shoppingList.metadata?.mealsIncluded || 0} meals across {shoppingList.metadata?.daysIncluded || 0} days</li>
                 <li>Automatically categorized into {Object.keys(shoppingList.categories).length} shopping categories</li>
+                <li>Adjust quantities with +/- buttons or remove items completely</li>
                 <li>Check off items as you shop - progress saves locally</li>
                 <li>Export as text file for offline use</li>
               </ul>
@@ -292,9 +366,19 @@ const ShoppingListPage = () => {
                 disabled={checkedItems.size === 0}
                 className="px-4 py-2 bg-gray-100 text-gray-700 rounded-md hover:bg-gray-200 disabled:opacity-50 disabled:cursor-not-allowed transition flex items-center"
               >
-                <Trash2 className="h-4 w-4 mr-2" />
+                <Check className="h-4 w-4 mr-2" />
                 Clear Checked
               </button>
+
+              {removedItems.size > 0 && (
+                <button
+                  onClick={restoreRemovedItems}
+                  className="px-4 py-2 bg-yellow-100 text-yellow-700 rounded-md hover:bg-yellow-200 transition flex items-center"
+                >
+                  <RefreshCw className="h-4 w-4 mr-2" />
+                  Restore {removedItems.size} Removed
+                </button>
+              )}
             </div>
 
             <div className="flex gap-3">
@@ -357,16 +441,14 @@ const ShoppingListPage = () => {
               <div className="text-sm text-gray-600">Checked Off</div>
             </div>
             <div>
-              <div className="text-2xl font-bold text-blue-600">
-                {Math.round((checkedItems.size / shoppingList.totalItems) * 100)}%
-              </div>
-              <div className="text-sm text-gray-600">Complete</div>
+              <div className="text-2xl font-bold text-red-600">{removedItems.size}</div>
+              <div className="text-sm text-gray-600">Removed</div>
             </div>
             <div>
-              <div className="text-2xl font-bold text-purple-600">
-                {Object.keys(shoppingList.categories).length}
+              <div className="text-2xl font-bold text-blue-600">
+                {shoppingList.totalItems > 0 ? Math.round((checkedItems.size / shoppingList.totalItems) * 100) : 0}%
               </div>
-              <div className="text-sm text-gray-600">Categories</div>
+              <div className="text-sm text-gray-600">Complete</div>
             </div>
           </div>
         </div>
@@ -435,11 +517,48 @@ const ShoppingListPage = () => {
                           </div>
                           
                           <div className="ml-3 flex-1">
-                            <div className={checkedItems.has(item.id) ? 'line-through' : ''}>
-                              <span className="font-medium text-gray-900">{item.name}</span>
-                              <span className="ml-2 text-gray-600">
-                                ({item.displayQuantity || `${item.quantity} ${item.unit}`})
-                              </span>
+                            <div className="flex items-center justify-between">
+                              <div className={checkedItems.has(item.id) ? 'line-through' : ''}>
+                                <span className="font-medium text-gray-900">{item.name}</span>
+                              </div>
+                              <div className="flex items-center gap-2">
+                                {/* Quantity Adjustment */}
+                                <div className="flex items-center border rounded">
+                                  <button
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      adjustQuantity(category, item.id, -1);
+                                    }}
+                                    className="p-1 hover:bg-gray-100"
+                                    disabled={item.quantity <= 1}
+                                  >
+                                    <Minus className="h-3 w-3" />
+                                  </button>
+                                  <span className="px-2 text-sm min-w-[60px] text-center">
+                                    {item.displayQuantity || `${item.quantity}`} {item.unit}
+                                  </span>
+                                  <button
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      adjustQuantity(category, item.id, 1);
+                                    }}
+                                    className="p-1 hover:bg-gray-100"
+                                  >
+                                    <Plus className="h-3 w-3" />
+                                  </button>
+                                </div>
+                                {/* Remove Item */}
+                                <button
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    removeItem(category, item.id);
+                                  }}
+                                  className="p-1 text-red-500 hover:bg-red-50 rounded"
+                                  title="Remove item"
+                                >
+                                  <Trash2 className="h-4 w-4" />
+                                </button>
+                              </div>
                             </div>
                             {item.sources && item.sources.length > 0 && (
                               <div className="text-xs text-gray-500 mt-1">
