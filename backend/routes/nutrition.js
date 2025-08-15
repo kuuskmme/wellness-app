@@ -438,7 +438,7 @@ router.get('/meal-plan/:id', async (req, res) => {
   }
 });
 
-// Update meal plan
+// Update meal plan - Fixed version
 router.put('/meal-plan/:id', async (req, res) => {
   try {
     const mealPlan = await MealPlan.findOne({
@@ -452,8 +452,17 @@ router.put('/meal-plan/:id', async (req, res) => {
     
     const { action, data } = req.body;
     
+    // Check if action and data exist
+    if (!action) {
+      return res.status(400).json({ message: 'Action is required' });
+    }
+    
     switch (action) {
       case 'swap':
+        if (!data || data.dayIndex1 === undefined || data.mealIndex1 === undefined || 
+            data.dayIndex2 === undefined || data.mealIndex2 === undefined) {
+          return res.status(400).json({ message: 'Missing required swap parameters' });
+        }
         await mealPlan.swapMeals(
           data.dayIndex1,
           data.mealIndex1,
@@ -463,31 +472,82 @@ router.put('/meal-plan/:id', async (req, res) => {
         break;
         
       case 'lock':
-        mealPlan.dailyPlans[data.dayIndex].meals[data.mealIndex].isLocked = true;
-        await mealPlan.save();
+        if (!data || data.dayIndex === undefined || data.mealIndex === undefined) {
+          return res.status(400).json({ message: 'Missing dayIndex or mealIndex' });
+        }
+        if (mealPlan.dailyPlans[data.dayIndex] && mealPlan.dailyPlans[data.dayIndex].meals[data.mealIndex]) {
+          mealPlan.dailyPlans[data.dayIndex].meals[data.mealIndex].isLocked = true;
+          await mealPlan.save();
+        } else {
+          return res.status(400).json({ message: 'Invalid dayIndex or mealIndex' });
+        }
         break;
         
       case 'unlock':
-        mealPlan.dailyPlans[data.dayIndex].meals[data.mealIndex].isLocked = false;
-        await mealPlan.save();
+        if (!data || data.dayIndex === undefined || data.mealIndex === undefined) {
+          return res.status(400).json({ message: 'Missing dayIndex or mealIndex' });
+        }
+        if (mealPlan.dailyPlans[data.dayIndex] && mealPlan.dailyPlans[data.dayIndex].meals[data.mealIndex]) {
+          mealPlan.dailyPlans[data.dayIndex].meals[data.mealIndex].isLocked = false;
+          await mealPlan.save();
+        } else {
+          return res.status(400).json({ message: 'Invalid dayIndex or mealIndex' });
+        }
         break;
         
       case 'addMeal':
-        await mealPlan.addManualMeal(data.dayIndex, data.meal);
+        if (!data || data.dayIndex === undefined || !data.meal) {
+          return res.status(400).json({ message: 'Missing dayIndex or meal data' });
+        }
+        if (mealPlan.dailyPlans[data.dayIndex]) {
+          await mealPlan.addManualMeal(data.dayIndex, data.meal);
+        } else {
+          return res.status(400).json({ message: 'Invalid dayIndex' });
+        }
         break;
         
       case 'removeMeal':
-        mealPlan.dailyPlans[data.dayIndex].meals.splice(data.mealIndex, 1);
-        await mealPlan.save();
+        if (!data || data.dayIndex === undefined || data.mealIndex === undefined) {
+          return res.status(400).json({ message: 'Missing dayIndex or mealIndex' });
+        }
+        if (mealPlan.dailyPlans[data.dayIndex] && mealPlan.dailyPlans[data.dayIndex].meals[data.mealIndex]) {
+          mealPlan.dailyPlans[data.dayIndex].meals.splice(data.mealIndex, 1);
+          await mealPlan.save();
+        } else {
+          return res.status(400).json({ message: 'Invalid dayIndex or mealIndex' });
+        }
         break;
         
       case 'updateStatus':
+        if (!data || !data.status) {
+          return res.status(400).json({ message: 'Missing status' });
+        }
+        if (!['draft', 'active', 'archived'].includes(data.status)) {
+          return res.status(400).json({ message: 'Invalid status. Must be draft, active, or archived' });
+        }
         mealPlan.status = data.status;
         await mealPlan.save();
         break;
         
+      case 'updateMeal':
+        // For updating a specific meal's details
+        if (!data || data.dayIndex === undefined || data.mealIndex === undefined || !data.updates) {
+          return res.status(400).json({ message: 'Missing required parameters for meal update' });
+        }
+        if (mealPlan.dailyPlans[data.dayIndex] && mealPlan.dailyPlans[data.dayIndex].meals[data.mealIndex]) {
+          const meal = mealPlan.dailyPlans[data.dayIndex].meals[data.mealIndex];
+          // Update meal properties
+          if (data.updates.name) meal.name = data.updates.name;
+          if (data.updates.nutrition) meal.nutrition = { ...meal.nutrition, ...data.updates.nutrition };
+          if (data.updates.customRecipe) meal.customRecipe = { ...meal.customRecipe, ...data.updates.customRecipe };
+          await mealPlan.save();
+        } else {
+          return res.status(400).json({ message: 'Invalid dayIndex or mealIndex' });
+        }
+        break;
+        
       default:
-        return res.status(400).json({ message: 'Invalid action' });
+        return res.status(400).json({ message: `Invalid action: ${action}` });
     }
     
     res.json({
@@ -496,7 +556,7 @@ router.put('/meal-plan/:id', async (req, res) => {
     });
   } catch (error) {
     console.error('Update meal plan error:', error);
-    res.status(500).json({ message: 'Server error while updating meal plan' });
+    res.status(500).json({ message: 'Server error while updating meal plan', error: error.message });
   }
 });
 
