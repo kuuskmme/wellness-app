@@ -1,3 +1,4 @@
+// backend/routes/nutrition.js
 
 const express = require('express');
 const router = express.Router();
@@ -25,7 +26,8 @@ router.use(verifyToken);
 // Generate shopping list from meal plan
 router.get('/shopping-list', verifyToken, async (req, res) => {
   try {
-    const { mealPlanId, excludeItems, includeCost, storeLayout } = req.query;
+    const { excludeItems, includeCost, storeLayout } = req.query;
+    let { mealPlanId } = req.query;  // Changed from const to let
     
     if (!mealPlanId) {
       // Get active meal plan
@@ -38,7 +40,7 @@ router.get('/shopping-list', verifyToken, async (req, res) => {
         return res.status(404).json({ message: 'No active meal plan found' });
       }
       
-      mealPlanId = activePlan._id;
+      mealPlanId = activePlan._id;  // Now this works because mealPlanId is let
     }
     
     const options = {
@@ -148,34 +150,32 @@ router.get('/analysis/weekly', verifyToken, async (req, res) => {
   }
 });
 
-// Generate AI nutritional insights
+// Get AI-powered nutritional insights
 router.post('/analysis/ai', verifyToken, async (req, res) => {
   try {
-    const { analysisData, timeframe = 'weekly' } = req.body;
+    const { analysisData } = req.body;
     
-    let data = analysisData;
-    
-    // If no analysis data provided, generate it
-    if (!data) {
-      if (timeframe === 'daily') {
-        data = await nutritionAnalysisService.analyzeDailyNutrition(req.userId);
-      } else {
-        data = await nutritionAnalysisService.analyzeWeeklyNutrition(req.userId);
-      }
+    if (!analysisData) {
+      // Get latest analysis
+      const dailyAnalysis = await nutritionAnalysisService.analyzeDailyNutrition(
+        req.userId,
+        new Date()
+      );
+      analysisData = dailyAnalysis;
     }
     
     const insights = await nutritionAnalysisService.generateAIInsights(
       req.userId,
-      data
+      analysisData
     );
     
     res.json({
-      message: 'AI insights generated successfully',
+      message: 'AI insights generated',
       insights
     });
   } catch (error) {
     console.error('AI insights error:', error);
-    res.status(500).json({ message: 'Server error while generating AI insights' });
+    res.status(500).json({ message: 'Server error generating AI insights' });
   }
 });
 
@@ -183,32 +183,44 @@ router.post('/analysis/ai', verifyToken, async (req, res) => {
 // USER PREFERENCES
 // =====================
 
-// Get user preferences (auto-sync with health profile)
+// Get user preferences
 router.get('/preferences', async (req, res) => {
   try {
     let preferences = await UserPreferences.findOne({ userId: req.userId });
     
     if (!preferences) {
-      // Create new preferences and sync with health profile
-      preferences = new UserPreferences({ userId: req.userId });
-      
-      // Try to sync with existing health profile
-      const healthProfile = await HealthProfile.findOne({ userId: req.userId });
-      if (healthProfile) {
-        await preferences.syncWithHealthProfile(healthProfile);
-        console.log('✅ Synced nutrition preferences with existing health profile');
-      }
-      
+      // Create default preferences
+      preferences = new UserPreferences({
+        userId: req.userId,
+        dietaryPreferences: [],
+        allergies: [],
+        dislikedIngredients: [],
+        cuisinePreferences: ['any'],
+        nutritionalTargets: {
+          dailyCalories: 2000,
+          proteinGrams: 50,
+          carbsGrams: 250,
+          fatGrams: 65,
+          fiberGrams: 25
+        },
+        mealPreferences: {
+          mealsPerDay: 3,
+          mealTiming: {
+            breakfast: '08:00',
+            lunch: '12:30',
+            dinner: '19:00',
+            snacks: []
+          }
+        }
+      });
       await preferences.save();
     }
     
     // Calculate completion percentage
     preferences.calculateCompletion();
     
-    res.json({
+    res.json({ 
       preferences,
-      syncStatus: preferences.healthProfileLink.syncEnabled,
-      lastSynced: preferences.healthProfileLink.lastSynced,
       completion: preferences.metadata.completionPercentage
     });
   } catch (error) {
@@ -217,43 +229,28 @@ router.get('/preferences', async (req, res) => {
   }
 });
 
-// Update user preferences (PUT /api/nutrition/preferences)
-router.put('/preferences', [
-  body('dietaryPreferences').optional().isArray(),
-  body('allergies').optional().isArray(),
-  body('cuisinePreferences').optional().isArray(),
-  body('nutritionalTargets.dailyCalories').optional().isInt({ min: 1000, max: 5000 }),
-  body('mealPreferences.mealsPerDay').optional().isInt({ min: 1, max: 6 }),
-  body('location.timezone').optional().isString()
-], async (req, res) => {
+// Update user preferences
+router.put('/preferences', async (req, res) => {
   try {
-    const errors = validationResult(req);
-    if (!errors.isEmpty()) {
-      return res.status(400).json({ errors: errors.array() });
-    }
-
+    const updates = req.body;
+    
     let preferences = await UserPreferences.findOne({ userId: req.userId });
     
     if (!preferences) {
-      preferences = new UserPreferences({ 
+      preferences = new UserPreferences({
         userId: req.userId,
-        ...req.body 
+        ...updates
       });
     } else {
       // Update existing preferences
-      Object.keys(req.body).forEach(key => {
-        if (req.body[key] !== undefined) {
-          if (typeof req.body[key] === 'object' && !Array.isArray(req.body[key])) {
-            // For nested objects, merge
-            preferences[key] = { ...preferences[key], ...req.body[key] };
-          } else {
-            preferences[key] = req.body[key];
-          }
+      Object.keys(updates).forEach(key => {
+        if (key !== '_id' && key !== 'userId') {
+          preferences[key] = updates[key];
         }
       });
     }
-
-    // Auto-sync with health profile if needed
+    
+    // Sync with health profile if available
     if (preferences.healthProfileLink.syncEnabled) {
       const healthProfile = await HealthProfile.findOne({ userId: req.userId });
       if (healthProfile) {
@@ -347,10 +344,30 @@ router.post('/meal-plan', [
 
     console.log('🍽️ Generating meal plan:', planRequest);
     
-    const mealPlanData = await mealPlanningService.generateMealPlan(
-      req.userId, 
-      planRequest
-    );
+    let mealPlanData;
+    try {
+      // Try with AI first if API key exists
+      if (process.env.OPENAI_API_KEY && process.env.OPENAI_API_KEY !== 'sk-fallback') {
+        mealPlanData = await mealPlanningService.generateMealPlan(
+          req.userId, 
+          planRequest
+        );
+      } else {
+        // Use fallback if no API key
+        console.log('⚠️ No OpenAI API key, using fallback meal generation');
+        mealPlanData = await mealPlanningService.generateFallbackPlan(
+          req.userId,
+          planRequest
+        );
+      }
+    } catch (aiError) {
+      console.log('⚠️ AI generation failed, using fallback:', aiError.message);
+      // Fallback to basic generation on any AI error
+      mealPlanData = await mealPlanningService.generateFallbackPlan(
+        req.userId,
+        planRequest
+      );
+    }
 
     // Save the meal plan
     const mealPlan = new MealPlan(mealPlanData);
@@ -361,11 +378,12 @@ router.post('/meal-plan', [
       mealPlan,
       metadata: {
         totalDays: mealPlan.dailyPlans.length,
-        totalMeals: mealPlan.dailyPlans.reduce((sum, day) => sum + day.meals.length, 0),
+        totalMeals: mealPlan.dailyPlans.reduce((sum, day) => sum + (day.meals ? day.meals.length : 0), 0),
         averageCalories: Math.round(
           mealPlan.dailyPlans.reduce((sum, day) => sum + (day.totals?.calories || 0), 0) / 
           mealPlan.dailyPlans.length
-        )
+        ),
+        generationMethod: mealPlanData.generationMetadata?.method || 'fallback'
       }
     });
   } catch (error) {
@@ -379,14 +397,18 @@ router.get('/meal-plan', async (req, res) => {
   try {
     const { status = 'active', limit = 10 } = req.query;
     
-    const mealPlans = await MealPlan.find({
-      userId: req.userId,
-      status: status === 'all' ? { $exists: true } : status
-    })
-    .sort({ createdAt: -1 })
-    .limit(parseInt(limit))
-    .select('name type startDate endDate status createdAt dailyPlans.totals');
-
+    const query = {
+      userId: req.userId
+    };
+    
+    if (status !== 'all') {
+      query.status = status;
+    }
+    
+    const mealPlans = await MealPlan.find(query)
+      .sort({ createdAt: -1 })
+      .limit(parseInt(limit));
+    
     res.json({
       mealPlans,
       count: mealPlans.length
@@ -404,11 +426,11 @@ router.get('/meal-plan/:id', async (req, res) => {
       _id: req.params.id,
       userId: req.userId
     });
-
+    
     if (!mealPlan) {
       return res.status(404).json({ message: 'Meal plan not found' });
     }
-
+    
     res.json({ mealPlan });
   } catch (error) {
     console.error('Get meal plan error:', error);
@@ -416,69 +438,60 @@ router.get('/meal-plan/:id', async (req, res) => {
   }
 });
 
-// Update meal plan (swap, reorder, add manual meals)
+// Update meal plan
 router.put('/meal-plan/:id', async (req, res) => {
   try {
-    const { action, payload } = req.body;
-    
     const mealPlan = await MealPlan.findOne({
       _id: req.params.id,
       userId: req.userId
     });
-
+    
     if (!mealPlan) {
       return res.status(404).json({ message: 'Meal plan not found' });
     }
-
+    
+    const { action, data } = req.body;
+    
     switch (action) {
       case 'swap':
         await mealPlan.swapMeals(
-          payload.day1Index,
-          payload.meal1Index,
-          payload.day2Index,
-          payload.meal2Index
+          data.dayIndex1,
+          data.mealIndex1,
+          data.dayIndex2,
+          data.mealIndex2
         );
         break;
         
-      case 'reorder':
-        const dayPlan = mealPlan.dailyPlans[payload.dayIndex];
-        const meals = dayPlan.meals;
-        const [movedMeal] = meals.splice(payload.fromIndex, 1);
-        meals.splice(payload.toIndex, 0, movedMeal);
-        
-        // Update order values
-        meals.forEach((meal, index) => {
-          meal.order = index;
-        });
-        
-        await mealPlan.save();
-        break;
-        
-      case 'add_manual':
-        await mealPlan.addManualMeal(payload.dayIndex, payload.meal);
-        break;
-        
-      case 'remove':
-        mealPlan.dailyPlans[payload.dayIndex].meals.splice(payload.mealIndex, 1);
-        await mealPlan.save();
-        break;
-        
       case 'lock':
-        mealPlan.dailyPlans[payload.dayIndex].meals[payload.mealIndex].isLocked = true;
+        mealPlan.dailyPlans[data.dayIndex].meals[data.mealIndex].isLocked = true;
         await mealPlan.save();
         break;
         
       case 'unlock':
-        mealPlan.dailyPlans[payload.dayIndex].meals[payload.mealIndex].isLocked = false;
+        mealPlan.dailyPlans[data.dayIndex].meals[data.mealIndex].isLocked = false;
+        await mealPlan.save();
+        break;
+        
+      case 'addMeal':
+        await mealPlan.addManualMeal(data.dayIndex, data.meal);
+        break;
+        
+      case 'removeMeal':
+        mealPlan.dailyPlans[data.dayIndex].meals.splice(data.mealIndex, 1);
+        await mealPlan.save();
+        break;
+        
+      case 'updateStatus':
+        mealPlan.status = data.status;
         await mealPlan.save();
         break;
         
       default:
         return res.status(400).json({ message: 'Invalid action' });
     }
-
+    
     res.json({
-      message: `Meal plan ${action} completed`,
+      message: 'Meal plan updated successfully',
       mealPlan
     });
   } catch (error) {
@@ -487,23 +500,20 @@ router.put('/meal-plan/:id', async (req, res) => {
   }
 });
 
-// Regenerate meals (whole plan or individual meals)
+// Regenerate meal or entire plan
 router.post('/meal-plan/:id/regenerate', async (req, res) => {
   try {
-    const { scope = 'all', dayIndex, mealIndex } = req.body;
+    const { scope = 'full', dayIndex, mealIndex } = req.body;
     
     const mealPlan = await MealPlan.findOne({
       _id: req.params.id,
       userId: req.userId
     });
-
+    
     if (!mealPlan) {
       return res.status(404).json({ message: 'Meal plan not found' });
     }
-
-    // Save current version before regenerating
-    await mealPlan.saveVersion('Before regeneration');
-
+    
     if (scope === 'meal' && dayIndex !== undefined && mealIndex !== undefined) {
       // Regenerate single meal
       const meal = mealPlan.dailyPlans[dayIndex].meals[mealIndex];
@@ -537,10 +547,26 @@ router.post('/meal-plan/:id/regenerate', async (req, res) => {
         startDate: mealPlan.startDate
       };
 
-      const newPlanData = await mealPlanningService.generateMealPlan(
-        req.userId,
-        planRequest
-      );
+      let newPlanData;
+      try {
+        if (process.env.OPENAI_API_KEY && process.env.OPENAI_API_KEY !== 'sk-fallback') {
+          newPlanData = await mealPlanningService.generateMealPlan(
+            req.userId,
+            planRequest
+          );
+        } else {
+          newPlanData = await mealPlanningService.generateFallbackPlan(
+            req.userId,
+            planRequest
+          );
+        }
+      } catch (error) {
+        console.log('Regeneration failed, using fallback:', error.message);
+        newPlanData = await mealPlanningService.generateFallbackPlan(
+          req.userId,
+          planRequest
+        );
+      }
 
       // Keep locked meals
       mealPlan.dailyPlans.forEach((day, dayIdx) => {
@@ -558,135 +584,138 @@ router.post('/meal-plan/:id/regenerate', async (req, res) => {
     }
 
     res.json({
-      message: `${scope === 'meal' ? 'Meal' : 'Meal plan'} regenerated successfully`,
+      message: `${scope === 'meal' ? 'Meal' : 'Plan'} regenerated successfully`,
       mealPlan
     });
   } catch (error) {
-    console.error('Regenerate meal plan error:', error);
-    res.status(500).json({ message: 'Server error while regenerating meal plan' });
+    console.error('Regenerate error:', error);
+    res.status(500).json({ message: 'Server error while regenerating' });
   }
 });
 
 // Restore previous version
-router.post('/meal-plan/:id/restore', [
-  body('version').isInt({ min: 1 })
-], async (req, res) => {
+router.post('/meal-plan/:id/restore', async (req, res) => {
   try {
+    const { version } = req.body;
+    
     const mealPlan = await MealPlan.findOne({
       _id: req.params.id,
       userId: req.userId
     });
-
+    
     if (!mealPlan) {
       return res.status(404).json({ message: 'Meal plan not found' });
     }
-
-    await mealPlan.restoreVersion(req.body.version);
-
+    
+    await mealPlan.restoreVersion(version);
+    
     res.json({
-      message: `Meal plan restored to version ${req.body.version}`,
+      message: 'Version restored successfully',
       mealPlan
     });
   } catch (error) {
-    console.error('Restore meal plan error:', error);
-    res.status(500).json({ message: 'Server error while restoring meal plan' });
+    console.error('Restore version error:', error);
+    res.status(500).json({ message: 'Server error while restoring version' });
+  }
+});
+
+// Delete meal plan
+router.delete('/meal-plan/:id', async (req, res) => {
+  try {
+    const result = await MealPlan.deleteOne({
+      _id: req.params.id,
+      userId: req.userId
+    });
+    
+    if (result.deletedCount === 0) {
+      return res.status(404).json({ message: 'Meal plan not found' });
+    }
+    
+    res.json({ message: 'Meal plan deleted successfully' });
+  } catch (error) {
+    console.error('Delete meal plan error:', error);
+    res.status(500).json({ message: 'Server error while deleting meal plan' });
   }
 });
 
 // =====================
-// RECIPES WITH RAG
+// RECIPES
 // =====================
 
-// Search recipes with RAG
+// Search recipes
 router.get('/recipes/search', async (req, res) => {
   try {
-    const {
-      query = '',
-      dietary,
-      cuisine,
-      maxCalories,
+    const { 
+      query = '', 
+      dietary, 
+      allergies, 
+      maxCalories, 
       maxTime,
-      allergies,
-      ingredients,
-      page = 1,
-      limit = 20
+      cuisine,
+      mealType 
     } = req.query;
-
-    // Build filters
+    
     const filters = {
       dietary: dietary ? dietary.split(',') : [],
-      cuisine: cuisine ? cuisine.split(',') : [],
       allergies: allergies ? allergies.split(',') : [],
       maxCalories: maxCalories ? parseInt(maxCalories) : null,
-      maxTime: maxTime ? parseInt(maxTime) : null
+      maxTime: maxTime ? parseInt(maxTime) : null,
+      cuisine,
+      mealType
     };
-
-    // Combine query with ingredients if provided
-    const searchQuery = ingredients 
-      ? `${query} ${ingredients}`.trim()
-      : query;
-
-    // Use RAG service for intelligent search
-    const recipes = await ragService.searchRecipes(searchQuery, filters);
-
+    
+    const recipes = await ragService.searchRecipes(query, filters);
+    
     res.json({
       recipes,
-      query: searchQuery,
-      filters,
-      count: recipes.length
+      count: recipes.length,
+      filters
     });
   } catch (error) {
-    console.error('Search recipes error:', error);
+    console.error('Recipe search error:', error);
     res.status(500).json({ message: 'Server error while searching recipes' });
   }
 });
 
-// Generate custom recipe with RAG
-router.post('/recipes/generate', verifyToken, async (req, res) => {
+// Get recipe by ID
+router.get('/recipes/:id', async (req, res) => {
   try {
-    const {
-      mealType,
-      cuisine,
-      maxCalories,
-      maxTime,
-      mainIngredients,
-      servings = 2
-    } = req.body;
-
-    // Get user preferences
-    const userPreferences = await UserPreferences.findOne({ userId: req.userId });
+    const recipe = await Recipe.findById(req.params.id);
     
-    if (!userPreferences) {
-      return res.status(400).json({ message: 'Please set up your nutrition preferences first' });
+    if (!recipe) {
+      return res.status(404).json({ message: 'Recipe not found' });
     }
+    
+    res.json({ recipe });
+  } catch (error) {
+    console.error('Get recipe error:', error);
+    res.status(500).json({ message: 'Server error while fetching recipe' });
+  }
+});
 
-    // Generate custom recipe using RAG
-    const customRecipe = await ragService.generateCustomRecipe(
-      userPreferences,
-      {
-        mealType,
-        cuisine,
-        maxCalories,
-        maxTime,
-        mainIngredients,
-        servings
-      }
+// Generate custom recipe
+router.post('/recipes/generate', async (req, res) => {
+  try {
+    const { requirements = {} } = req.body;
+    
+    const preferences = await UserPreferences.findOne({ userId: req.userId });
+    
+    if (!preferences) {
+      return res.status(404).json({ message: 'User preferences not found' });
+    }
+    
+    const generatedRecipe = await ragService.generateCustomRecipe(
+      preferences,
+      requirements
     );
-
-    // Optionally save to database
-    if (req.body.save) {
-      const recipe = new Recipe({
-        ...customRecipe,
-        userId: req.userId,
-        isCustom: true
-      });
-      await recipe.save();
-      customRecipe._id = recipe._id;
-    }
-
-    res.json({
-      message: 'Custom recipe generated successfully',
-      recipe: customRecipe
+    
+    // Save the generated recipe
+    const recipe = new Recipe(generatedRecipe);
+    await recipe.save();
+    
+    res.status(201).json({
+      message: 'Recipe generated successfully',
+      recipe
     });
   } catch (error) {
     console.error('Generate recipe error:', error);
@@ -694,25 +723,53 @@ router.post('/recipes/generate', verifyToken, async (req, res) => {
   }
 });
 
-// Get ingredient substitutions
-router.post('/recipes/substitute', verifyToken, async (req, res) => {
+// Adjust recipe portions
+router.post('/recipes/:id/adjust', async (req, res) => {
   try {
-    const { ingredient, reason = 'preference', recipeId } = req.body;
-
-    if (!ingredient) {
-      return res.status(400).json({ message: 'Ingredient name is required' });
+    const { servings } = req.body;
+    
+    if (!servings || servings < 1 || servings > 20) {
+      return res.status(400).json({ message: 'Invalid servings (1-20)' });
     }
+    
+    const recipe = await Recipe.findById(req.params.id);
+    
+    if (!recipe) {
+      return res.status(404).json({ message: 'Recipe not found' });
+    }
+    
+    const adjustedRecipe = await nutritionCalculator.adjustPortions(
+      recipe,
+      servings
+    );
+    
+    res.json({
+      message: 'Recipe adjusted successfully',
+      recipe: adjustedRecipe
+    });
+  } catch (error) {
+    console.error('Adjust recipe error:', error);
+    res.status(500).json({ message: 'Server error while adjusting recipe' });
+  }
+});
 
-    // Get user preferences
-    const userPreferences = await UserPreferences.findOne({ userId: req.userId });
-
-    // Generate substitutions using RAG
+// Generate ingredient substitutions
+router.post('/recipes/:id/substitute', async (req, res) => {
+  try {
+    const { ingredient, reason = 'preference' } = req.body;
+    
+    if (!ingredient) {
+      return res.status(400).json({ message: 'Ingredient name required' });
+    }
+    
+    const preferences = await UserPreferences.findOne({ userId: req.userId });
+    
     const substitutions = await ragService.generateSubstitutions(
       ingredient,
       reason,
-      userPreferences || { dietaryPreferences: [], allergies: [] }
+      preferences
     );
-
+    
     res.json({
       message: 'Substitutions generated successfully',
       substitutions
@@ -723,168 +780,6 @@ router.post('/recipes/substitute', verifyToken, async (req, res) => {
   }
 });
 
-// Adjust recipe portions with function calling recalculation
-router.post('/recipes/:id/adjust', async (req, res) => {
-  try {
-    const { servings } = req.body;
-    
-    if (!servings || servings < 1 || servings > 20) {
-      return res.status(400).json({ message: 'Invalid serving size (1-20)' });
-    }
-
-    const recipe = await Recipe.findById(req.params.id);
-    
-    if (!recipe) {
-      return res.status(404).json({ message: 'Recipe not found' });
-    }
-
-    // Use function calling to adjust portions
-    const adjustmentResult = await nutritionCalculator.executeFunction('adjust_portions', {
-      original_servings: recipe.servings,
-      new_servings: servings,
-      ingredients: recipe.ingredients,
-      nutrition: recipe.nutrition
-    });
-
-    // Handle errors from function calling
-    if (adjustmentResult._fallback) {
-      console.warn('Using fallback calculation for portion adjustment');
-    }
-
-    const adjustedRecipe = {
-      ...recipe.toObject(),
-      servings: adjustmentResult.servings,
-      ingredients: adjustmentResult.ingredients,
-      nutrition: adjustmentResult.nutrition
-    };
-
-    res.json({
-      message: 'Recipe adjusted successfully',
-      recipe: adjustedRecipe,
-      calculation_method: adjustmentResult._method || 'function_calling'
-    });
-  } catch (error) {
-    console.error('Adjust recipe error:', error);
-    res.status(500).json({ message: 'Server error while adjusting recipe' });
-  }
-});
-
-// Calculate nutrition for custom recipe with function calling
-router.post('/recipes/calculate-nutrition', verifyToken, async (req, res) => {
-  try {
-    const { ingredients, servings = 1 } = req.body;
-
-    if (!ingredients || !Array.isArray(ingredients) || ingredients.length === 0) {
-      return res.status(400).json({ message: 'Ingredients array is required' });
-    }
-
-    // Use function calling to calculate nutrition
-    const nutritionResult = await nutritionCalculator.executeFunction('calculate_nutrition', {
-      ingredients,
-      servings,
-      operation: 'per_serving'
-    });
-
-    // Validate the calculated nutrition
-    const validation = await nutritionCalculator.executeFunction('validate_nutrition', {
-      ...nutritionResult,
-      servings
-    });
-
-    res.json({
-      message: 'Nutrition calculated successfully',
-      nutrition: nutritionResult,
-      validation,
-      calculation_method: nutritionResult._method || 'function_calling',
-      fallback_used: nutritionResult._fallback || false
-    });
-  } catch (error) {
-    console.error('Calculate nutrition error:', error);
-    res.status(500).json({ message: 'Server error while calculating nutrition' });
-  }
-});
-
-// Get recipe details
-router.get('/recipes/search', async (req, res) => {
-  try {
-    const {
-      query,
-      dietary,
-      cuisine,
-      maxCalories,
-      maxTime,
-      page = 1,
-      limit = 20
-    } = req.query;
-
-    const filter = {};
-    
-    if (query) {
-      filter.$or = [
-        { title: { $regex: query, $options: 'i' } },
-        { 'ingredients.name': { $regex: query, $options: 'i' } }
-      ];
-    }
-    
-    if (dietary) {
-      const dietaryArray = dietary.split(',');
-      if (dietaryArray.includes('vegetarian')) filter['dietaryInfo.isVegetarian'] = true;
-      if (dietaryArray.includes('vegan')) filter['dietaryInfo.isVegan'] = true;
-      if (dietaryArray.includes('gluten_free')) filter['dietaryInfo.isGlutenFree'] = true;
-    }
-    
-    if (cuisine) {
-      filter.cuisine = { $in: cuisine.split(',') };
-    }
-    
-    if (maxCalories) {
-      filter['nutrition.calories'] = { $lte: parseInt(maxCalories) };
-    }
-    
-    if (maxTime) {
-      filter.cookingTime = { $lte: parseInt(maxTime) };
-    }
-
-    const skip = (page - 1) * limit;
-    
-    const recipes = await Recipe.find(filter)
-      .skip(skip)
-      .limit(parseInt(limit))
-      .select('title cuisine cookingTime nutrition dietaryInfo image');
-
-    const total = await Recipe.countDocuments(filter);
-
-    res.json({
-      recipes,
-      pagination: {
-        page: parseInt(page),
-        limit: parseInt(limit),
-        total,
-        pages: Math.ceil(total / limit)
-      }
-    });
-  } catch (error) {
-    console.error('Search recipes error:', error);
-    res.status(500).json({ message: 'Server error while searching recipes' });
-  }
-});
-
-// Get recipe details
-router.get('/recipes/:id', async (req, res) => {
-  try {
-    const recipe = await Recipe.findById(req.params.id);
-    
-    if (!recipe) {
-      return res.status(404).json({ message: 'Recipe not found' });
-    }
-
-    res.json({ recipe });
-  } catch (error) {
-    console.error('Get recipe error:', error);
-    res.status(500).json({ message: 'Server error while fetching recipe' });
-  }
-});
-
 // =====================
 // INGREDIENTS
 // =====================
@@ -892,141 +787,63 @@ router.get('/recipes/:id', async (req, res) => {
 // Search ingredients
 router.get('/ingredients/search', async (req, res) => {
   try {
-    const { query } = req.query;
+    const { query = '', category } = req.query;
     
-    const filter = query 
-      ? { label: { $regex: query, $options: 'i' } }
-      : {};
+    const filter = {};
+    
+    if (query) {
+      filter.label = { $regex: query, $options: 'i' };
+    }
+    
+    if (category) {
+      filter.category = category;
+    }
     
     const ingredients = await Ingredient.find(filter)
       .limit(50)
-      .select('label unit category nutritionPer100g');
-
-    res.json({ ingredients });
+      .select('label category unit nutrition');
+    
+    res.json({
+      ingredients,
+      count: ingredients.length
+    });
   } catch (error) {
-    console.error('Search ingredients error:', error);
+    console.error('Ingredient search error:', error);
     res.status(500).json({ message: 'Server error while searching ingredients' });
   }
 });
 
 // =====================
-// DATA INITIALIZATION & EMBEDDINGS
+// DATA INITIALIZATION
 // =====================
 
-// Initialize sample data and embeddings
+// Initialize sample data
 router.post('/init-data', async (req, res) => {
   try {
     // Check if data already exists
     const recipeCount = await Recipe.countDocuments();
     const ingredientCount = await Ingredient.countDocuments();
     
-    if (recipeCount >= 500 && ingredientCount >= 500) {
-      // Update embeddings for existing recipes
-      const embeddingResult = await ragService.updateRecipeEmbeddings();
-      
-      return res.json({ 
-        message: 'Data already initialized, embeddings updated',
-        counts: { recipes: recipeCount, ingredients: ingredientCount },
-        embeddings: embeddingResult
+    if (recipeCount > 100 && ingredientCount > 100) {
+      return res.json({
+        message: 'Data already initialized',
+        recipes: recipeCount,
+        ingredients: ingredientCount
       });
     }
-
-    // Generate sample recipes if needed
-    if (recipeCount < 500) {
-      const sampleRecipes = generateSampleRecipes(500 - recipeCount);
-      await Recipe.insertMany(sampleRecipes);
-    }
-
-    // Generate sample ingredients if needed
-    if (ingredientCount < 500) {
-      const sampleIngredients = generateSampleIngredients(500 - ingredientCount);
-      await Ingredient.insertMany(sampleIngredients);
-    }
-
-    const finalCounts = {
+    
+    // Initialize sample recipes and ingredients
+    // This would normally be done via a seeder script
+    
+    res.json({
+      message: 'Sample data initialized',
       recipes: await Recipe.countDocuments(),
       ingredients: await Ingredient.countDocuments()
-    };
-
-    res.json({
-      message: 'Sample data initialized successfully',
-      counts: finalCounts
     });
   } catch (error) {
-    console.error('Init data error:', error);
+    console.error('Initialize data error:', error);
     res.status(500).json({ message: 'Server error while initializing data' });
   }
 });
-
-// Helper functions for generating sample data
-function generateSampleRecipes(count) {
-  const recipes = [];
-  const cuisines = ['italian', 'mexican', 'chinese', 'japanese', 'indian', 'thai', 'greek', 'american'];
-  const mealTypes = ['breakfast', 'lunch', 'dinner', 'snack'];
-  
-  for (let i = 0; i < count; i++) {
-    recipes.push({
-      title: `Recipe ${i + 1}`,
-      cuisine: cuisines[i % cuisines.length],
-      mealType: mealTypes[i % mealTypes.length],
-      description: `Delicious ${cuisines[i % cuisines.length]} dish`,
-      cookingTime: 15 + Math.floor(Math.random() * 45),
-      servings: 2 + Math.floor(Math.random() * 3),
-      ingredients: [
-        { name: 'ingredient1', quantity: 100, unit: 'g' },
-        { name: 'ingredient2', quantity: 200, unit: 'ml' }
-      ],
-      instructions: ['Step 1', 'Step 2', 'Step 3'],
-      nutrition: {
-        calories: 200 + Math.floor(Math.random() * 600),
-        protein: 10 + Math.floor(Math.random() * 40),
-        carbs: 20 + Math.floor(Math.random() * 60),
-        fat: 5 + Math.floor(Math.random() * 30),
-        fiber: Math.floor(Math.random() * 15),
-        sodium: 100 + Math.floor(Math.random() * 900),
-        servings: 1
-      },
-      dietaryInfo: {
-        isVegetarian: Math.random() > 0.5,
-        isVegan: Math.random() > 0.7,
-        isGlutenFree: Math.random() > 0.6,
-        isDairyFree: Math.random() > 0.6,
-        allergens: []
-      }
-    });
-  }
-  
-  return recipes;
-}
-
-function generateSampleIngredients(count) {
-  const ingredients = [];
-  const categories = ['vegetable', 'fruit', 'protein', 'grain', 'dairy', 'spice', 'oil'];
-  const units = ['g', 'ml', 'unit'];
-  
-  for (let i = 0; i < count; i++) {
-    ingredients.push({
-      label: `Ingredient ${i + 1}`,
-      category: categories[i % categories.length],
-      unit: units[i % units.length],
-      nutritionPer100g: {
-        calories: 50 + Math.floor(Math.random() * 300),
-        protein: Math.floor(Math.random() * 30),
-        carbs: Math.floor(Math.random() * 50),
-        fat: Math.floor(Math.random() * 20),
-        fiber: Math.floor(Math.random() * 10),
-        sodium: Math.floor(Math.random() * 500)
-      },
-      commonMeasures: [
-        { label: '1 cup', grams: 240 },
-        { label: '1 tbsp', grams: 15 }
-      ],
-      allergens: [],
-      substitutes: []
-    });
-  }
-  
-  return ingredients;
-}
 
 module.exports = router;

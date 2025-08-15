@@ -1,4 +1,3 @@
-
 import React from 'react';
 import { BrowserRouter as Router, Routes, Route, Navigate, Link } from 'react-router-dom';
 import { AuthProvider, useAuth } from './context/AuthContext';
@@ -18,6 +17,31 @@ import VerifyPendingPage from './pages/VerifyPendingPage';
 import NutritionPreferencesPage from './pages/NutritionPreferencesPage';
 import MealPlannerPage from './pages/MealPlannerPage';
 import RecipeSearchPage from './pages/RecipeSearchPage';
+import ShoppingListPage from './pages/ShoppingListPage'; // Add this import
+
+// Create a fallback component for NutritionAnalysisPage if it doesn't exist
+const NutritionAnalysisPage = () => (
+  <div className="min-h-screen bg-gray-50 py-8">
+    <div className="max-w-7xl mx-auto px-4">
+      <h1 className="text-3xl font-bold text-gray-900 mb-4">Nutritional Analysis</h1>
+      <div className="bg-white rounded-lg shadow p-6">
+        <p className="text-gray-600 mb-4">
+          Nutritional analysis features will help you track and understand your dietary intake.
+        </p>
+        <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
+          <h3 className="font-semibold text-blue-900 mb-2">Coming Soon:</h3>
+          <ul className="list-disc list-inside text-blue-800 space-y-1">
+            <li>Daily macro and micronutrient tracking</li>
+            <li>Weekly nutritional trends</li>
+            <li>AI-powered dietary insights</li>
+            <li>Calorie deficit/surplus tracking</li>
+            <li>Nutritional goal progress</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </div>
+);
 
 // Navigation component
 const Navigation = () => {
@@ -64,13 +88,31 @@ const Navigation = () => {
                         to="/nutrition/preferences"
                         className="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-100"
                       >
-                        Preferences
+                        🎯 Preferences
                       </Link>
                       <Link
                         to="/nutrition/meal-planner"
                         className="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-100"
                       >
-                        Meal Planner
+                        📅 Meal Planner
+                      </Link>
+                      <Link
+                        to="/nutrition/recipes"
+                        className="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-100"
+                      >
+                        🔍 Recipe Search
+                      </Link>
+                      <Link
+                        to="/nutrition/shopping-list"
+                        className="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-100"
+                      >
+                        🛒 Shopping List
+                      </Link>
+                      <Link
+                        to="/nutrition/analysis"
+                        className="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-100"
+                      >
+                        📊 Analysis
                       </Link>
                     </div>
                   </div>
@@ -132,15 +174,9 @@ const Layout = ({ children }) => {
               © 2024 Wellness Platform. All rights reserved.
             </p>
             <div className="flex space-x-6">
-              <a href="#" className="text-sm text-gray-500 hover:text-gray-900">
-                Privacy Policy
-              </a>
-              <a href="#" className="text-sm text-gray-500 hover:text-gray-900">
-                Terms of Service
-              </a>
-              <a href="#" className="text-sm text-gray-500 hover:text-gray-900">
-                Contact
-              </a>
+              <button className="text-sm text-gray-500 hover:text-gray-700">Privacy Policy</button>
+              <button className="text-sm text-gray-500 hover:text-gray-700">Terms of Service</button>
+              <button className="text-sm text-gray-500 hover:text-gray-700">Contact</button>
             </div>
           </div>
         </div>
@@ -165,7 +201,7 @@ function App() {
               <Route path="/verify-email/:token" element={<VerifyEmailPage />} />
               <Route path="/verify-pending" element={<VerifyPendingPage />} />
               
-              {/* Protected Routes - Health & Wellness */}
+              {/* Protected Routes */}
               <Route
                 path="/dashboard"
                 element={
@@ -208,31 +244,11 @@ function App() {
                   </ProtectedRoute>
                 }
               />
-              
-              {/* Future Nutrition Routes (Step 3-6) */}
-              <Route
-                path="/nutrition/recipes"
-                element={
-                  <ProtectedRoute>
-                    <div className="min-h-screen bg-gray-50 py-8">
-                      <div className="max-w-7xl mx-auto px-4">
-                        <h1 className="text-3xl font-bold text-gray-900 mb-4">Recipe Search</h1>
-                        <p className="text-gray-600">Coming in Step 3: RAG-based recipe search and generation</p>
-                      </div>
-                    </div>
-                  </ProtectedRoute>
-                }
-              />
               <Route
                 path="/nutrition/shopping-list"
                 element={
                   <ProtectedRoute>
-                    <div className="min-h-screen bg-gray-50 py-8">
-                      <div className="max-w-7xl mx-auto px-4">
-                        <h1 className="text-3xl font-bold text-gray-900 mb-4">Shopping List</h1>
-                        <p className="text-gray-600">Coming in Step 5: Smart shopping list generation</p>
-                      </div>
-                    </div>
+                    <ShoppingListPage />
                   </ProtectedRoute>
                 }
               />
@@ -240,15 +256,17 @@ function App() {
                 path="/nutrition/analysis"
                 element={
                   <ProtectedRoute>
-                    <div className="min-h-screen bg-gray-50 py-8">
-                      <div className="max-w-7xl mx-auto px-4">
-                        <h1 className="text-3xl font-bold text-gray-900 mb-4">Nutritional Analysis</h1>
-                        <p className="text-gray-600">Coming in Step 5: Detailed nutritional analysis and tracking</p>
-                      </div>
-                    </div>
+                    <NutritionAnalysisPage />
                   </ProtectedRoute>
                 }
               />
+              
+              {/* Legacy routes - redirect to new paths */}
+              <Route path="/nutrition-preferences" element={<Navigate to="/nutrition/preferences" replace />} />
+              <Route path="/meal-planner" element={<Navigate to="/nutrition/meal-planner" replace />} />
+              <Route path="/recipe-search" element={<Navigate to="/nutrition/recipes" replace />} />
+              <Route path="/shopping-list" element={<Navigate to="/nutrition/shopping-list" replace />} />
+              <Route path="/nutrition-analysis" element={<Navigate to="/nutrition/analysis" replace />} />
               
               {/* Catch all - redirect to home */}
               <Route path="*" element={<Navigate to="/" replace />} />
