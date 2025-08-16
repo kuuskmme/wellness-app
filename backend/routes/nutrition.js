@@ -471,17 +471,17 @@ router.put('/meal-plan/:id', auth, async (req, res) => {
         }
         break;
         
-      case 'addMeal':
-        // Add a manual meal
-        const { dayIndex, meal } = data;
-        if (mealPlan.dailyPlans[dayIndex]) {
-          mealPlan.dailyPlans[dayIndex].meals.push({
-            ...meal,
-            isCustom: true,
-            order: mealPlan.dailyPlans[dayIndex].meals.length
-          });
-        }
-        break;
+      case 'manual_add':
+  // Add a manual meal
+  const { dayIndex, meal } = data;
+  if (mealPlan.dailyPlans[dayIndex]) {
+    mealPlan.dailyPlans[dayIndex].meals.push({
+      ...meal,
+      isCustom: true,
+      order: mealPlan.dailyPlans[dayIndex].meals.length
+    });
+  }
+  break;
         
       case 'removeMeal':
         // Remove a meal

@@ -373,7 +373,7 @@ const MealPlannerPage = () => {
           'Content-Type': 'application/json'
         },
         body: JSON.stringify({
-          action: 'addMeal',  // Changed from 'add_manual' to 'addMeal'
+            action: 'manual_add',
           data: {  // Changed from payload to data
             dayIndex: manualMealDay,
             meal: {
