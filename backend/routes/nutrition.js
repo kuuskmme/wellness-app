@@ -247,23 +247,27 @@ router.put('/preferences', auth, async (req, res) => {
 // MEAL PLANNING
 // =====================
 
-// Generate meal plan - FIXED VERSION
+// Generate meal plan
 router.post('/meal-plan', auth, async (req, res) => {
   try {
     const { type = 'daily', startDate, requirements = {} } = req.body;
     
-    const preferences = await UserPreferences.findOne({ userId: req.userId });
+    let preferences = await UserPreferences.findOne({ userId: req.userId });
     
     if (!preferences) {
       // Create default preferences if not found
-      const defaultPreferences = new UserPreferences({
+      preferences = new UserPreferences({
         userId: req.userId,
         dietaryPreferences: [],
         allergies: [],
-        calorieTarget: 2000
+        calorieTarget: 2000,
+        macroTargets: {
+          proteinPercentage: 30,
+          carbsPercentage: 40,
+          fatPercentage: 30
+        }
       });
-      await defaultPreferences.save();
-      preferences = defaultPreferences;
+      await preferences.save();
     }
     
     // Ensure valid startDate
@@ -281,7 +285,7 @@ router.post('/meal-plan', auth, async (req, res) => {
     const planRequest = {
       userId: req.userId,
       duration: type,
-      type: type, // Include both for compatibility
+      type: type,
       startDate: planStartDate,
       requirements: requirements
     };
@@ -294,68 +298,19 @@ router.post('/meal-plan', auth, async (req, res) => {
     
     let mealPlan;
     
-    // Always use fallback for now since we don't have the full service
+    // Try to use the service, fallback if needed
     try {
-      mealPlan = await mealPlanningService.generateFallbackPlan(
-        req.userId,
-        planRequest
-      );
-    } catch (fallbackError) {
-      console.error('Fallback generation failed:', fallbackError);
-      
-      // Create minimal valid meal plan
-      const now = new Date();
-      const endDate = new Date(now);
-      if (type === 'weekly') {
-        endDate.setDate(endDate.getDate() + 6);
-      }
-      
-      mealPlan = {
-        userId: req.userId,
-        type: type,
-        name: `Meal Plan - ${now.toISOString().split('T')[0]}`,
-        startDate: now,
-        endDate: endDate,
-        dailyPlans: [{
-          date: now,
-          meals: [{
-            type: 'breakfast',
-            name: 'Simple Breakfast',
-            nutrition: {
-              calories: 350,
-              protein: 15,
-              carbs: 50,
-              fat: 10,
-              fiber: 5,
-              sodium: 200,
-              sugar: 10
-            },
-            servings: 1,
-            alternatives: [],
-            order: 0,
-            isLocked: false,
-            isCustom: false
-          }],
-          notes: '',
-          totals: {
-            calories: 350,
-            protein: 15,
-            carbs: 50,
-            fat: 10,
-            fiber: 5,
-            sodium: 200,
-            sugar: 10
-          }
-        }],
-        generationMetadata: {
-          method: 'emergency-fallback',
-          generatedAt: now
-        },
-        status: 'active'
-      };
+      mealPlan = await mealPlanningService.generateMealPlan(req.userId, planRequest);
+    } catch (serviceError) {
+      console.error('Service generation failed, using fallback:', serviceError);
+      mealPlan = await mealPlanningService.generateFallbackPlan(req.userId, planRequest);
     }
     
-    // Validate before saving
+    // Ensure the meal plan has proper structure
+    if (!mealPlan.status) {
+      mealPlan.status = 'active';
+    }
+    
     if (!mealPlan.type) {
       mealPlan.type = type;
     }
@@ -369,18 +324,6 @@ router.post('/meal-plan', auth, async (req, res) => {
       if (mealPlan.type === 'weekly') {
         mealPlan.endDate.setDate(mealPlan.endDate.getDate() + 6);
       }
-    }
-    
-    // Ensure all daily plans have valid dates
-    if (mealPlan.dailyPlans && mealPlan.dailyPlans.length > 0) {
-      mealPlan.dailyPlans = mealPlan.dailyPlans.map((plan, index) => {
-        if (!plan.date || isNaN(new Date(plan.date).getTime())) {
-          const validDate = new Date(mealPlan.startDate);
-          validDate.setDate(validDate.getDate() + index);
-          plan.date = validDate;
-        }
-        return plan;
-      });
     }
     
     // Save the meal plan
@@ -411,30 +354,66 @@ router.post('/meal-plan', auth, async (req, res) => {
   }
 });
 
-// Get meal plans
+// Get meal plans (with proper filtering)
 router.get('/meal-plan', auth, async (req, res) => {
   try {
-    const { startDate, endDate, type } = req.query;
+    const { startDate, endDate, type, status, limit = 10 } = req.query;
     
     const filter = { userId: req.userId };
     
+    // Filter by date range
     if (startDate && endDate) {
       filter.startDate = { $gte: new Date(startDate) };
       filter.endDate = { $lte: new Date(endDate) };
     }
     
+    // Filter by type
     if (type) {
       filter.type = type;
     }
     
+    // Filter by status
+    if (status && status !== 'all') {
+      if (status === 'active') {
+        // For active plans, check if they're current
+        const today = new Date();
+        filter.$and = [
+          { status: { $in: ['active', 'draft'] } },
+          { startDate: { $lte: today } },
+          { endDate: { $gte: today } }
+        ];
+      } else {
+        filter.status = status;
+      }
+    }
+    
     const mealPlans = await MealPlan.find(filter)
       .sort({ createdAt: -1 })
-      .limit(10);
+      .limit(parseInt(limit));
     
     res.json({ mealPlans });
   } catch (error) {
     console.error('Get meal plans error:', error);
     res.status(500).json({ message: 'Server error while fetching meal plans' });
+  }
+});
+
+// Get specific meal plan by ID
+router.get('/meal-plan/:id', auth, async (req, res) => {
+  try {
+    const mealPlan = await MealPlan.findOne({
+      _id: req.params.id,
+      userId: req.userId
+    });
+    
+    if (!mealPlan) {
+      return res.status(404).json({ message: 'Meal plan not found' });
+    }
+    
+    res.json({ mealPlan });
+  } catch (error) {
+    console.error('Get meal plan by ID error:', error);
+    res.status(500).json({ message: 'Server error while fetching meal plan' });
   }
 });
 
@@ -454,14 +433,19 @@ router.put('/meal-plan/:id', auth, async (req, res) => {
     
     switch(action) {
       case 'swap':
-        // Swap meal implementation
-        const { dateIndex, mealIndex, newMeal } = data;
-        if (mealPlan.dailyPlans[dateIndex] && mealPlan.dailyPlans[dateIndex].meals[mealIndex]) {
-          mealPlan.dailyPlans[dateIndex].meals[mealIndex] = newMeal;
+        // Swap meals between days
+        const { dayIndex1, mealIndex1, dayIndex2, mealIndex2 } = data;
+        if (mealPlan.dailyPlans[dayIndex1] && mealPlan.dailyPlans[dayIndex2]) {
+          const meal1 = mealPlan.dailyPlans[dayIndex1].meals[mealIndex1];
+          const meal2 = mealPlan.dailyPlans[dayIndex2].meals[mealIndex2];
+          
+          mealPlan.dailyPlans[dayIndex1].meals[mealIndex1] = meal2;
+          mealPlan.dailyPlans[dayIndex2].meals[mealIndex2] = meal1;
         }
         break;
+        
       case 'regenerate':
-        // Regenerate meal implementation
+        // Regenerate a specific meal
         const preferences = await UserPreferences.findOne({ userId: req.userId });
         const newMealData = await mealPlanningService.generateSingleMeal(
           preferences,
@@ -472,22 +456,58 @@ router.put('/meal-plan/:id', auth, async (req, res) => {
           mealPlan.dailyPlans[data.dateIndex].meals[data.mealIndex] = newMealData;
         }
         break;
+        
       case 'lock':
-        // Lock/unlock meal implementation
-        if (data.dateIndex !== undefined && data.mealIndex !== undefined) {
-          mealPlan.dailyPlans[data.dateIndex].meals[data.mealIndex].isLocked = data.locked;
+        // Lock a meal
+        if (data.dayIndex !== undefined && data.mealIndex !== undefined) {
+          mealPlan.dailyPlans[data.dayIndex].meals[data.mealIndex].isLocked = true;
         }
         break;
-      case 'remove':
-        // Remove meal implementation
-        if (data.dateIndex !== undefined && data.mealIndex !== undefined) {
-          mealPlan.dailyPlans[data.dateIndex].meals.splice(data.mealIndex, 1);
+        
+      case 'unlock':
+        // Unlock a meal
+        if (data.dayIndex !== undefined && data.mealIndex !== undefined) {
+          mealPlan.dailyPlans[data.dayIndex].meals[data.mealIndex].isLocked = false;
         }
         break;
-      default:
-        // Direct update
-        Object.assign(mealPlan, data);
+        
+      case 'addMeal':
+        // Add a manual meal
+        const { dayIndex, meal } = data;
+        if (mealPlan.dailyPlans[dayIndex]) {
+          mealPlan.dailyPlans[dayIndex].meals.push({
+            ...meal,
+            isCustom: true,
+            order: mealPlan.dailyPlans[dayIndex].meals.length
+          });
+        }
+        break;
+        
+      case 'removeMeal':
+        // Remove a meal
+        const { dayIdx, mealIdx } = data;
+        if (mealPlan.dailyPlans[dayIdx] && mealPlan.dailyPlans[dayIdx].meals[mealIdx]) {
+          mealPlan.dailyPlans[dayIdx].meals.splice(mealIdx, 1);
+        }
+        break;
+        
+      case 'reorder':
+        // Reorder meals within a day
+        const { dayIndex: dayI, newOrder } = data;
+        if (mealPlan.dailyPlans[dayI]) {
+          const meals = mealPlan.dailyPlans[dayI].meals;
+          const reorderedMeals = newOrder.map(index => meals[index]);
+          mealPlan.dailyPlans[dayI].meals = reorderedMeals;
+        }
+        break;
     }
+    
+    // Track modification
+    mealPlan.modifications.push({
+      date: new Date(),
+      type: action,
+      details: data
+    });
     
     await mealPlan.save();
     
@@ -498,6 +518,76 @@ router.put('/meal-plan/:id', auth, async (req, res) => {
   } catch (error) {
     console.error('Update meal plan error:', error);
     res.status(500).json({ message: 'Server error while updating meal plan' });
+  }
+});
+
+// Regenerate meal plan or specific meals
+router.post('/meal-plan/:id/regenerate', auth, async (req, res) => {
+  try {
+    const { scope = 'meal', dayIndex, mealIndex } = req.body;
+    
+    const mealPlan = await MealPlan.findOne({
+      _id: req.params.id,
+      userId: req.userId
+    });
+    
+    if (!mealPlan) {
+      return res.status(404).json({ message: 'Meal plan not found' });
+    }
+    
+    const preferences = await UserPreferences.findOne({ userId: req.userId });
+    
+    if (scope === 'meal' && dayIndex !== undefined && mealIndex !== undefined) {
+      // Regenerate specific meal
+      const mealType = mealPlan.dailyPlans[dayIndex].meals[mealIndex].type;
+      const newMeal = await mealPlanningService.generateSingleMeal(preferences, mealType);
+      
+      // Preserve lock status
+      newMeal.isLocked = mealPlan.dailyPlans[dayIndex].meals[mealIndex].isLocked;
+      
+      mealPlan.dailyPlans[dayIndex].meals[mealIndex] = newMeal;
+    } else if (scope === 'full') {
+      // Regenerate entire plan but keep locked meals
+      const lockedMeals = [];
+      
+      // Store locked meals
+      mealPlan.dailyPlans.forEach((day, dayIdx) => {
+        day.meals.forEach((meal, mealIdx) => {
+          if (meal.isLocked) {
+            lockedMeals.push({ dayIdx, mealIdx, meal });
+          }
+        });
+      });
+      
+      // Generate new plan
+      const newPlanData = await mealPlanningService.generateMealPlan(req.userId, {
+        userId: req.userId,
+        duration: mealPlan.type,
+        type: mealPlan.type,
+        startDate: mealPlan.startDate,
+        requirements: {}
+      });
+      
+      // Replace daily plans
+      mealPlan.dailyPlans = newPlanData.dailyPlans;
+      
+      // Restore locked meals
+      lockedMeals.forEach(({ dayIdx, mealIdx, meal }) => {
+        if (mealPlan.dailyPlans[dayIdx] && mealPlan.dailyPlans[dayIdx].meals[mealIdx]) {
+          mealPlan.dailyPlans[dayIdx].meals[mealIdx] = meal;
+        }
+      });
+    }
+    
+    await mealPlan.save();
+    
+    res.json({
+      message: 'Meal plan regenerated successfully',
+      mealPlan
+    });
+  } catch (error) {
+    console.error('Regenerate meal plan error:', error);
+    res.status(500).json({ message: 'Server error while regenerating meal plan' });
   }
 });
 
