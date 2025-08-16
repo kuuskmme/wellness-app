@@ -1,4 +1,4 @@
-
+// backend/routes/healthProfile.js
 const express = require('express');
 const router = express.Router();
 const { body, validationResult } = require('express-validator');
@@ -37,14 +37,23 @@ router.post('/', requireDataConsent, [
     let profile = await HealthProfile.findOne({ userId: req.userId });
     
     if (profile) {
-      // Update existing profile
+      // Update existing profile - preserve initial weight
+      const initialWeight = profile.metadata?.initialWeight;
       Object.assign(profile, req.body);
+      if (initialWeight && !profile.metadata.initialWeight) {
+        profile.metadata.initialWeight = initialWeight;
+      }
       profile.metadata.lastUpdated = new Date();
     } else {
-      // Create new profile
+      // Create new profile - store initial weight
       profile = new HealthProfile({
         userId: req.userId,
-        ...req.body
+        ...req.body,
+        metadata: {
+          ...req.body.metadata,
+          initialWeight: req.body.physicalMetrics?.weight?.normalizedValue || 
+                        req.body.physicalMetrics?.weight?.value
+        }
       });
     }
 
@@ -160,7 +169,7 @@ router.patch('/:section', requireDataConsent, async (req, res) => {
   }
 });
 
-// Calculate wellness score
+// Calculate wellness score - FIXED VERSION
 router.get('/wellness-score', async (req, res) => {
   try {
     const profile = await HealthProfile.findOne({ userId: req.userId });
@@ -227,45 +236,99 @@ router.get('/wellness-score', async (req, res) => {
         score += alcoholMap[alcohol] || 50;
       }
 
-      return factors > 0 ? score / factors : 50;
+      // FIX: Return 0 if no factors, otherwise calculate average
+      return factors > 0 ? (score / factors) : 0;
     };
 
-    const calculateProgressScore = (currentWeight, targetWeight, startWeight) => {
+    // FIX: Improved progress score calculation
+    const calculateProgressScore = (currentWeight, targetWeight, initialWeight) => {
+      // If no target weight set, return neutral score
       if (!targetWeight || !currentWeight) return 50;
       
-      const totalToLose = Math.abs(startWeight - targetWeight);
-      const progressMade = Math.abs(startWeight - currentWeight);
+      // Use initial weight from profile metadata or current weight as fallback
+      const startWeight = initialWeight || currentWeight;
       
-      if (totalToLose === 0) return 100;
+      // If current weight equals target, perfect score
+      if (Math.abs(currentWeight - targetWeight) < 0.5) return 100;
       
-      const progressPercent = (progressMade / totalToLose) * 100;
-      return Math.min(progressPercent, 100);
+      // Calculate progress based on distance to target
+      const totalDistance = Math.abs(startWeight - targetWeight);
+      const remainingDistance = Math.abs(currentWeight - targetWeight);
+      
+      if (totalDistance === 0) return 100;
+      
+      // Progress is how much closer we've gotten to the target
+      const progressMade = totalDistance - remainingDistance;
+      const progressPercent = (progressMade / totalDistance) * 100;
+      
+      // Ensure score is between 0 and 100
+      return Math.max(0, Math.min(progressPercent, 100));
     };
 
-    // Get the actual values from profile
-    const bmi = profile.physicalMetrics.bmi?.value;
+    // Get the actual values from profile with proper defaults
+    const bmi = profile.physicalMetrics?.bmi?.value || 0;
     const weeklyActivity = profile.initialFitnessAssessment?.weeklyActivityFrequency || 0;
-    const activityLevel = profile.lifestyleIndicators?.activityLevel;
+    const activityLevel = profile.lifestyleIndicators?.activityLevel || 'sedentary';
     const sleepHours = profile.lifestyleIndicators?.sleepHours;
     const stressLevel = profile.lifestyleIndicators?.stressLevel;
     const smokingStatus = profile.lifestyleIndicators?.smokingStatus;
     const alcoholConsumption = profile.lifestyleIndicators?.alcoholConsumption;
-    const currentWeight = profile.physicalMetrics.weight?.normalizedValue;
+    const currentWeight = profile.physicalMetrics?.weight?.normalizedValue;
     const targetWeight = profile.fitnessGoals?.targetWeight?.normalizedValue;
+    
+    // Try to get initial weight from profile metadata
+    const initialWeight = profile.metadata?.initialWeight || currentWeight;
 
-    // Calculate individual scores
-    const bmiScore = calculateBMIScore(bmi);
+    // Calculate individual scores with proper error handling
+    const bmiScore = bmi ? calculateBMIScore(bmi) : 0;
     const activityScore = calculateActivityScore(weeklyActivity, activityLevel);
     const habitsScore = calculateHabitsScore(sleepHours, stressLevel, smokingStatus, alcoholConsumption);
-    const progressScore = calculateProgressScore(currentWeight, targetWeight, currentWeight);
+    const progressScore = calculateProgressScore(currentWeight, targetWeight, initialWeight);
+
+    // Debug logging to identify issues
+    console.log('Wellness Score Debug:', {
+      bmi,
+      bmiScore,
+      weeklyActivity,
+      activityLevel,
+      activityScore,
+      habitsScore,
+      progressScore,
+      currentWeight,
+      targetWeight,
+      initialWeight
+    });
 
     // Calculate overall wellness score (weighted average)
-    const overallScore = Math.round(
-      (bmiScore * 0.3) +      // 30% weight
-      (activityScore * 0.3) +  // 30% weight
-      (progressScore * 0.2) +  // 20% weight
-      (habitsScore * 0.2)      // 20% weight
-    );
+    // Only include non-zero scores in calculation
+    const scores = [];
+    const weights = [];
+    
+    if (bmiScore > 0) {
+      scores.push(bmiScore);
+      weights.push(0.3);
+    }
+    if (activityScore > 0) {
+      scores.push(activityScore);
+      weights.push(0.3);
+    }
+    if (progressScore > 0) {
+      scores.push(progressScore);
+      weights.push(0.2);
+    }
+    if (habitsScore > 0) {
+      scores.push(habitsScore);
+      weights.push(0.2);
+    }
+    
+    // Calculate weighted average or default to 0
+    let overallScore = 0;
+    if (scores.length > 0) {
+      const totalWeight = weights.reduce((a, b) => a + b, 0);
+      overallScore = Math.round(
+        scores.reduce((sum, score, index) => sum + (score * weights[index]), 0) / totalWeight
+      );
+    }
 
     // Update profile with calculated scores
     profile.wellnessScore = {
