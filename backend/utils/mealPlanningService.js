@@ -2,6 +2,7 @@ const OpenAI = require('openai');
 const Recipe = require('../models/Recipe');
 const UserPreferences = require('../models/UserPreferences');
 const HealthProfile = require('../models/HealthProfile');
+const MEAL_TEMPLATES = require('./meal-templates');
 
 // Initialize OpenAI with fallback
 let openai = null;
