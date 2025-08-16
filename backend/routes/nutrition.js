@@ -1,3 +1,4 @@
+// backend/routes/nutrition.js - COMPLETE FILE
 const express = require('express');
 const router = express.Router();
 const { verifyToken: auth } = require('../middleware/auth');
@@ -65,84 +66,109 @@ router.put('/preferences', auth, async (req, res) => {
       });
     }
     
-    // Get or create preferences
     let preferences = await UserPreferences.findOne({ userId: req.userId });
     
     if (!preferences) {
-      preferences = new UserPreferences({ 
-        userId: req.userId,
-        dietaryPreferences: [],
-        allergies: [],
-        dislikedIngredients: [],
-        cuisinePreferences: [],
-        timezone: 'UTC'
+      preferences = new UserPreferences({ userId: req.userId });
+    }
+    
+    // Update preferences with request body
+    Object.assign(preferences, req.body);
+    
+    // Link to health profile
+    preferences.healthProfileLink = {
+      profileId: healthProfile._id,
+      lastSynced: new Date()
+    };
+    
+    await preferences.save();
+    
+    res.json(preferences);
+  } catch (error) {
+    console.error('Update preferences error:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+// Sync preferences with health profile
+router.post('/preferences/sync', auth, async (req, res) => {
+  try {
+    // Get both health profile and preferences
+    const [healthProfile, preferences] = await Promise.all([
+      HealthProfile.findOne({ userId: req.userId }),
+      UserPreferences.findOne({ userId: req.userId })
+    ]);
+    
+    if (!healthProfile) {
+      return res.status(404).json({ 
+        message: 'Health profile not found. Please create your health profile first.' 
       });
     }
     
-    // Store imported health data
-    preferences.healthProfileLink = {
-      linkedProfileId: healthProfile._id,
-      syncEnabled: true,
-      lastSynced: new Date(),
-      importedData: {
-        weight: healthProfile.physicalMetrics?.weight?.normalizedValue || null,
-        height: healthProfile.physicalMetrics?.height?.normalizedValue || null,
-        bmi: healthProfile.physicalMetrics?.bmi?.value || null,
-        activityLevel: healthProfile.lifestyleIndicators?.activityLevel || 'sedentary',
-        fitnessGoal: healthProfile.fitnessGoals?.primary || 'maintain_weight',
-        targetWeight: healthProfile.fitnessGoals?.targetWeight?.normalizedValue || null
-      }
-    };
-    
-    // Calculate BMR using Mifflin-St Jeor Equation
-    const weight = preferences.healthProfileLink.importedData.weight || 70; // kg
-    const height = preferences.healthProfileLink.importedData.height || 170; // cm
-    const age = healthProfile.demographics?.age || 30;
-    const gender = healthProfile.demographics?.gender || 'prefer_not_to_say';
-    
-    let bmr;
-    if (gender === 'male') {
-      bmr = 10 * weight + 6.25 * height - 5 * age + 5;
-    } else if (gender === 'female') {
-      bmr = 10 * weight + 6.25 * height - 5 * age - 161;
-    } else {
-      // Use average of male and female calculations
-      const maleBMR = 10 * weight + 6.25 * height - 5 * age + 5;
-      const femaleBMR = 10 * weight + 6.25 * height - 5 * age - 161;
-      bmr = (maleBMR + femaleBMR) / 2;
+    if (!preferences) {
+      return res.status(404).json({ 
+        message: 'Preferences not found. Please set your preferences first.' 
+      });
     }
     
-    // Apply activity level multiplier
+    // Calculate calorie targets based on health profile
+    const weight = healthProfile.physicalMetrics?.weight?.normalizedValue || 70;
+    const height = healthProfile.physicalMetrics?.height?.normalizedValue || 170;
+    const age = healthProfile.demographics?.age || 30;
+    const gender = healthProfile.demographics?.gender || 'other';
+    const activityLevel = healthProfile.lifestyleIndicators?.activityLevel || 'moderately_active';
+    const fitnessGoal = healthProfile.fitnessGoals?.primary || 'health_maintenance';
+    
+    // Calculate BMR
+    let bmr;
+    if (gender === 'male') {
+      bmr = (10 * weight) + (6.25 * height) - (5 * age) + 5;
+    } else {
+      bmr = (10 * weight) + (6.25 * height) - (5 * age) - 161;
+    }
+    
+    // Activity multipliers
     const activityMultipliers = {
-      'sedentary': 1.2,
-      'lightly_active': 1.375,
-      'moderately_active': 1.55,
-      'very_active': 1.725,
-      'extremely_active': 1.9
+      sedentary: 1.2,
+      lightly_active: 1.375,
+      moderately_active: 1.55,
+      very_active: 1.725,
+      extremely_active: 1.9
     };
     
-    const activityLevel = preferences.healthProfileLink.importedData.activityLevel;
-    const multiplier = activityMultipliers[activityLevel] || 1.2;
+    const multiplier = activityMultipliers[activityLevel] || 1.55;
     let targetCalories = Math.round(bmr * multiplier);
     
     // Adjust for fitness goals
-    const fitnessGoal = preferences.healthProfileLink.importedData.fitnessGoal;
     if (fitnessGoal === 'weight_loss') {
-      targetCalories -= 500; // 500 calorie deficit for ~1 lb/week loss
+      targetCalories -= 500; // 500 calorie deficit for ~1lb/week loss
     } else if (fitnessGoal === 'muscle_gain') {
       targetCalories += 300; // 300 calorie surplus for lean gains
     }
     
-    // Ensure calories are within reasonable bounds
-    targetCalories = Math.max(1200, Math.min(4000, targetCalories));
+    // Update preferences with calculated values
+    preferences.calorieTarget = targetCalories;
+    preferences.healthProfileLink = {
+      profileId: healthProfile._id,
+      lastSynced: new Date(),
+      importedData: {
+        bmi: healthProfile.physicalMetrics?.bmi?.value,
+        weight: weight,
+        height: height,
+        age: age,
+        activityLevel: activityLevel,
+        fitnessGoal: fitnessGoal,
+        targetWeight: healthProfile.fitnessGoals?.targetWeight?.normalizedValue
+      }
+    };
     
-    // Update nutritional targets
+    // Calculate macro targets based on goals
     preferences.nutritionalTargets = {
-      dailyCalories: targetCalories,
+      calories: targetCalories,
       macros: {
-        // Adjust macros based on fitness goal
         protein: {
-          grams: Math.round(fitnessGoal === 'muscle_gain' ? 
+          grams: Math.round(
+            fitnessGoal === 'muscle_gain' ? 
             weight * 2.2 : // 1g per lb for muscle gain
             weight * 1.6), // 0.8g per lb for maintenance/loss
           percentage: fitnessGoal === 'muscle_gain' ? 30 : 25
@@ -326,10 +352,12 @@ router.post('/meal-plan', auth, async (req, res) => {
       }
     }
     
-    // Save the meal plan
+    // Save the meal plan - THIS IS CRITICAL
     try {
       const savedPlan = new MealPlan(mealPlan);
       await savedPlan.save();
+      
+      console.log('Meal plan saved successfully with ID:', savedPlan._id);
       
       res.status(201).json({
         message: 'Meal plan generated successfully',
@@ -471,17 +499,17 @@ router.put('/meal-plan/:id', auth, async (req, res) => {
         }
         break;
         
-      case 'manual_add':
-  // Add a manual meal
-  const { dayIndex, meal } = data;
-  if (mealPlan.dailyPlans[dayIndex]) {
-    mealPlan.dailyPlans[dayIndex].meals.push({
-      ...meal,
-      isCustom: true,
-      order: mealPlan.dailyPlans[dayIndex].meals.length
-    });
-  }
-  break;
+      case 'addMeal':
+        // Add a manual meal
+        const { dayIndex, meal } = data;
+        if (mealPlan.dailyPlans[dayIndex]) {
+          mealPlan.dailyPlans[dayIndex].meals.push({
+            ...meal,
+            isCustom: true,
+            order: mealPlan.dailyPlans[dayIndex].meals.length
+          });
+        }
+        break;
         
       case 'removeMeal':
         // Remove a meal
@@ -508,6 +536,10 @@ router.put('/meal-plan/:id', auth, async (req, res) => {
       type: action,
       details: data
     });
+    
+    // IMPORTANT: Mark the subdocuments as modified
+    mealPlan.markModified('dailyPlans');
+    mealPlan.markModified('modifications');
     
     await mealPlan.save();
     
@@ -592,345 +624,328 @@ router.post('/meal-plan/:id/regenerate', auth, async (req, res) => {
 });
 
 // =====================
-// RECIPES - Public endpoints for search and viewing
+// VERSIONING ROUTES - FIXED TO PERSIST PROPERLY
 // =====================
 
-// Search recipes - PUBLIC ENDPOINT (no auth required)
-router.get('/recipes/search', async (req, res) => {
+// Save version of meal plan before major changes
+router.post('/meal-plan/:id/save-version', auth, async (req, res) => {
   try {
-    const { q: query = '', dietary, allergies, maxCalories, maxTime, cuisine, mealType } = req.query;
+    const { reason = 'Manual save' } = req.body;
     
-    console.log('Recipe search - bypassing corrupted database, using mock data only');
-    
-    // Skip database entirely - just use mock recipes
-    // The database has corrupted data, so we'll use clean mock data
-    let recipes = getMockRecipes();
-    
-    // Apply search filter if query provided
-    if (query) {
-      const searchLower = query.toLowerCase();
-      recipes = recipes.filter(r => 
-        r.title.toLowerCase().includes(searchLower) ||
-        (r.description && r.description.toLowerCase().includes(searchLower)) ||
-        r.ingredients.some(ing => ing.name.toLowerCase().includes(searchLower))
-      );
-    }
-    
-    // Apply other filters
-    if (maxCalories) {
-      const maxCal = parseInt(maxCalories);
-      recipes = recipes.filter(r => r.nutrition && r.nutrition.calories <= maxCal);
-    }
-    
-    if (maxTime) {
-      const max = parseInt(maxTime);
-      recipes = recipes.filter(r => r.cookingTime <= max);
-    }
-    
-    if (cuisine && cuisine !== 'any') {
-      recipes = recipes.filter(r => r.cuisine === cuisine);
-    }
-    
-    if (mealType && mealType !== 'any') {
-      recipes = recipes.filter(r => r.mealType === mealType);
-    }
-    
-    // Apply dietary filters
-    if (dietary && dietary.length > 0) {
-      const dietaryArr = typeof dietary === 'string' ? dietary.split(',') : dietary;
-      recipes = recipes.filter(recipe => {
-        if (dietaryArr.includes('vegetarian') && !recipe.dietaryInfo?.isVegetarian) return false;
-        if (dietaryArr.includes('vegan') && !recipe.dietaryInfo?.isVegan) return false;
-        if (dietaryArr.includes('gluten_free') && !recipe.dietaryInfo?.isGlutenFree) return false;
-        if (dietaryArr.includes('dairy_free') && !recipe.dietaryInfo?.isDairyFree) return false;
-        return true;
-      });
-    }
-    
-    // Apply allergy filters
-    if (allergies && allergies.length > 0) {
-      const allergyArr = typeof allergies === 'string' ? allergies.split(',') : allergies;
-      recipes = recipes.filter(recipe => {
-        const recipeAllergens = recipe.dietaryInfo?.allergens || [];
-        return !allergyArr.some(allergy => recipeAllergens.includes(allergy));
-      });
-    }
-    
-    // Ensure all recipes have proper nutrition data
-    const recipesWithNutrition = recipes.map(recipe => {
-      // Make sure nutrition exists and has values
-      if (!recipe.nutrition || typeof recipe.nutrition.calories === 'undefined') {
-        // Add default nutrition based on meal type
-        const nutritionDefaults = {
-          breakfast: { calories: 350, protein: 15, carbs: 45, fat: 12, fiber: 5, sugar: 10, sodium: 300 },
-          lunch: { calories: 450, protein: 25, carbs: 50, fat: 15, fiber: 8, sugar: 8, sodium: 500 },
-          dinner: { calories: 550, protein: 35, carbs: 55, fat: 20, fiber: 10, sugar: 6, sodium: 600 },
-          snack: { calories: 200, protein: 8, carbs: 25, fat: 8, fiber: 3, sugar: 12, sodium: 150 }
-        };
-        
-        recipe.nutrition = nutritionDefaults[recipe.mealType] || {
-          calories: 400,
-          protein: 20,
-          carbs: 45,
-          fat: 15,
-          fiber: 6,
-          sugar: 8,
-          sodium: 400
-        };
-      }
-      
-      return recipe;
+    const mealPlan = await MealPlan.findOne({
+      _id: req.params.id,
+      userId: req.userId
     });
     
-    console.log(`Returning ${recipesWithNutrition.length} mock recipes with nutrition`);
+    if (!mealPlan) {
+      return res.status(404).json({ message: 'Meal plan not found' });
+    }
+    
+    // Use the model method to save version
+    await mealPlan.saveVersion(reason);
+    
+    // IMPORTANT: Ensure the version is properly saved
+    console.log('Version saved:', {
+      planId: mealPlan._id,
+      version: mealPlan.version,
+      previousVersionsCount: mealPlan.previousVersions.length
+    });
     
     res.json({
-      recipes: recipesWithNutrition,
-      count: recipesWithNutrition.length,
-      filters: {},
-      source: 'mock' // Indicate we're using mock data
+      message: 'Version saved successfully',
+      version: mealPlan.version,
+      totalVersions: mealPlan.previousVersions.length
     });
-    
   } catch (error) {
-    console.error('Recipe search error:', error);
+    console.error('Save version error:', error);
+    res.status(500).json({ message: 'Server error while saving version' });
+  }
+});
+
+// Get version history
+router.get('/meal-plan/:id/versions', auth, async (req, res) => {
+  try {
+    const mealPlan = await MealPlan.findOne({
+      _id: req.params.id,
+      userId: req.userId
+    }).select('previousVersions version');
     
-    // Even on error, return mock recipes
-    const mockRecipes = getMockRecipes();
+    if (!mealPlan) {
+      return res.status(404).json({ message: 'Meal plan not found' });
+    }
+    
+    const versions = mealPlan.previousVersions.map(v => ({
+      version: v.version,
+      savedAt: v.savedAt,
+      reason: v.reason
+    }));
+    
     res.json({
-      recipes: mockRecipes,
-      count: mockRecipes.length,
-      filters: {},
-      source: 'mock-fallback'
+      currentVersion: mealPlan.version,
+      versions: versions
+    });
+  } catch (error) {
+    console.error('Get versions error:', error);
+    res.status(500).json({ message: 'Server error while fetching versions' });
+  }
+});
+
+// Restore specific version
+router.post('/meal-plan/:id/restore', auth, async (req, res) => {
+  try {
+    const { versionNumber } = req.body;
+    
+    if (!versionNumber) {
+      return res.status(400).json({ message: 'Version number required' });
+    }
+    
+    const mealPlan = await MealPlan.findOne({
+      _id: req.params.id,
+      userId: req.userId
+    });
+    
+    if (!mealPlan) {
+      return res.status(404).json({ message: 'Meal plan not found' });
+    }
+    
+    // Restore the version using the model method
+    await mealPlan.restoreVersion(versionNumber);
+    
+    res.json({
+      message: 'Version restored successfully',
+      mealPlan: mealPlan
+    });
+  } catch (error) {
+    console.error('Restore version error:', error);
+    res.status(500).json({ 
+      message: error.message || 'Server error while restoring version' 
     });
   }
 });
 
-// Also update the getMockRecipes function to ensure it has proper nutrition
-function getMockRecipes() {
-  return [
-    {
-      _id: 'mock1',
-      title: 'Healthy Quinoa Bowl',
-      description: 'A nutritious and filling quinoa bowl with vegetables',
-      cuisine: 'mediterranean',
-      mealType: 'lunch',
-      cookingTime: 25,
-      servings: 2,
-      difficulty: 'easy',
-      ingredients: [
-        { name: 'Quinoa', quantity: 200, unit: 'g', category: 'grain', notes: 'rinse before cooking' },
-        { name: 'Cherry tomatoes', quantity: 150, unit: 'g', category: 'vegetable' },
-        { name: 'Cucumber', quantity: 100, unit: 'g', category: 'vegetable', notes: 'diced' },
-        { name: 'Feta cheese', quantity: 50, unit: 'g', category: 'dairy', notes: 'crumbled' },
-        { name: 'Olive oil', quantity: 2, unit: 'tbsp', category: 'fat' },
-        { name: 'Lemon juice', quantity: 1, unit: 'tbsp', category: 'other' },
-        { name: 'Fresh mint', quantity: 10, unit: 'g', category: 'herb', notes: 'chopped' }
-      ],
-      instructions: [
-        'Rinse quinoa thoroughly under cold water',
-        'Cook quinoa according to package instructions (typically 15 minutes in boiling water)',
-        'Let quinoa cool to room temperature',
-        'Dice cucumber and halve cherry tomatoes',
-        'Mix vegetables with cooled quinoa in a large bowl',
-        'Crumble feta cheese on top',
-        'Drizzle with olive oil and lemon juice',
-        'Garnish with fresh mint',
-        'Season with salt and pepper to taste'
-      ],
-      nutrition: {
-        calories: 380,
-        protein: 14,
-        carbs: 52,
-        fat: 15,
-        fiber: 8,
-        sugar: 6,
-        sodium: 320
+// Archive old meal plans and create new one
+router.post('/meal-plan/archive-and-create', auth, async (req, res) => {
+  try {
+    // Archive all active plans for this user
+    await MealPlan.updateMany(
+      { 
+        userId: req.userId, 
+        status: 'active' 
       },
-      dietaryInfo: {
-        isVegetarian: true,
-        isGlutenFree: true,
-        allergens: ['dairy']
-      },
-      tips: [
-        'Add grilled chicken for extra protein',
-        'Can be made vegan by substituting feta with avocado',
-        'Stores well in the fridge for up to 3 days'
-      ],
-      variations: [
-        { name: 'Mexican Style', description: 'Add black beans, corn, and avocado with lime dressing' },
-        { name: 'Asian Fusion', description: 'Use edamame, sesame seeds, and ginger-soy dressing' },
-        { name: 'Protein Boost', description: 'Add chickpeas or grilled tofu for extra protein' }
-      ]
-    },
-    {
-      _id: 'mock2',
-      title: 'Grilled Chicken Salad',
-      description: 'Fresh and protein-rich salad with perfectly grilled chicken',
-      cuisine: 'american',
-      mealType: 'dinner',
-      cookingTime: 20,
-      servings: 2,
-      difficulty: 'easy',
-      ingredients: [
-        { name: 'Chicken breast', quantity: 300, unit: 'g', category: 'protein' },
-        { name: 'Mixed greens', quantity: 200, unit: 'g', category: 'vegetable' },
-        { name: 'Avocado', quantity: 1, unit: 'unit', category: 'vegetable', notes: 'sliced' },
-        { name: 'Cherry tomatoes', quantity: 100, unit: 'g', category: 'vegetable' },
-        { name: 'Red onion', quantity: 50, unit: 'g', category: 'vegetable', notes: 'thinly sliced' },
-        { name: 'Balsamic vinegar', quantity: 2, unit: 'tbsp', category: 'other' },
-        { name: 'Olive oil', quantity: 1, unit: 'tbsp', category: 'fat' }
-      ],
-      instructions: [
-        'Season chicken breast with salt, pepper, and herbs',
-        'Preheat grill or grill pan to medium-high heat',
-        'Grill chicken for 6-7 minutes per side until cooked through',
-        'Let chicken rest for 5 minutes, then slice',
-        'Arrange mixed greens on serving plates',
-        'Top with sliced chicken, avocado, tomatoes, and onion',
-        'Whisk together balsamic vinegar and olive oil',
-        'Drizzle dressing over salad',
-        'Serve immediately'
-      ],
-      nutrition: {
-        calories: 420,
-        protein: 38,
-        carbs: 15,
-        fat: 24,
-        fiber: 9,
-        sugar: 5,
-        sodium: 280
-      },
-      dietaryInfo: {
-        isGlutenFree: true,
-        isDairyFree: true,
-        isHighProtein: true
-      },
-      tips: [
-        'Marinate chicken for 30 minutes for extra flavor',
-        'Can substitute chicken with salmon or tofu',
-        'Add nuts or seeds for extra crunch'
-      ],
-      variations: [
-        { name: 'Caesar Style', description: 'Add parmesan, croutons, and Caesar dressing' },
-        { name: 'Mediterranean', description: 'Include olives, feta, and Greek dressing' }
-      ]
-    },
-    {
-      _id: 'mock3',
-      title: 'Vegetable Stir-Fry',
-      description: 'Quick and colorful vegetable stir-fry with Asian flavors',
-      cuisine: 'chinese',
-      mealType: 'dinner',
-      cookingTime: 15,
-      servings: 2,
-      difficulty: 'easy',
-      ingredients: [
-        { name: 'Broccoli', quantity: 150, unit: 'g', category: 'vegetable', notes: 'cut into florets' },
-        { name: 'Bell peppers', quantity: 150, unit: 'g', category: 'vegetable', notes: 'sliced' },
-        { name: 'Carrots', quantity: 100, unit: 'g', category: 'vegetable', notes: 'julienned' },
-        { name: 'Soy sauce', quantity: 2, unit: 'tbsp', category: 'other' },
-        { name: 'Garlic', quantity: 2, unit: 'unit', category: 'vegetable', notes: 'minced' },
-        { name: 'Ginger', quantity: 1, unit: 'tbsp', category: 'spice', notes: 'grated' },
-        { name: 'Sesame oil', quantity: 1, unit: 'tbsp', category: 'fat' },
-        { name: 'Rice', quantity: 200, unit: 'g', category: 'grain', notes: 'cooked' }
-      ],
-      instructions: [
-        'Cook rice according to package instructions',
-        'Heat sesame oil in a wok or large pan over high heat',
-        'Add minced garlic and ginger, stir-fry for 30 seconds',
-        'Add harder vegetables (broccoli, carrots) first',
-        'Stir-fry for 3-4 minutes',
-        'Add bell peppers and continue stir-frying for 2-3 minutes',
-        'Add soy sauce and toss to combine',
-        'Vegetables should be tender-crisp',
-        'Serve immediately over cooked rice'
-      ],
-      nutrition: {
-        calories: 320,
-        protein: 8,
-        carbs: 58,
-        fat: 7,
-        fiber: 8,
-        sugar: 12,
-        sodium: 580
-      },
-      dietaryInfo: {
-        isVegetarian: true,
-        isVegan: true,
-        isDairyFree: true
-      },
-      tips: [
-        'Keep vegetables moving in the pan for even cooking',
-        'Prep all ingredients before starting to cook',
-        'Add cashews or tofu for protein'
-      ],
-      variations: [
-        { name: 'Thai Style', description: 'Use Thai basil, lime, and fish sauce' },
-        { name: 'Teriyaki', description: 'Add teriyaki sauce and sesame seeds' },
-        { name: 'Spicy Version', description: 'Add chili flakes or sriracha sauce' }
-      ]
+      { 
+        $set: { 
+          status: 'archived',
+          archivedAt: new Date()
+        } 
+      }
+    );
+    
+    // Now create new plan (reuse existing generation logic)
+    const { type = 'daily', startDate, requirements = {} } = req.body;
+    
+    let preferences = await UserPreferences.findOne({ userId: req.userId });
+    
+    if (!preferences) {
+      preferences = new UserPreferences({
+        userId: req.userId,
+        dietaryPreferences: [],
+        allergies: [],
+        calorieTarget: 2000,
+        macroTargets: {
+          proteinPercentage: 30,
+          carbsPercentage: 40,
+          fatPercentage: 30
+        }
+      });
+      await preferences.save();
     }
-  ];
-}
+    
+    const planStartDate = startDate ? new Date(startDate) : new Date();
+    const planRequest = {
+      userId: req.userId,
+      duration: type,
+      type: type,
+      startDate: planStartDate,
+      requirements: requirements
+    };
+    
+    let mealPlan;
+    try {
+      mealPlan = await mealPlanningService.generateMealPlan(req.userId, planRequest);
+    } catch (serviceError) {
+      console.error('Service generation failed, using fallback:', serviceError);
+      mealPlan = await mealPlanningService.generateFallbackPlan(req.userId, planRequest);
+    }
+    
+    // Ensure proper structure
+    if (!mealPlan.status) {
+      mealPlan.status = 'active';
+    }
+    
+    if (!mealPlan.type) {
+      mealPlan.type = type;
+    }
+    
+    if (!mealPlan.startDate || isNaN(new Date(mealPlan.startDate).getTime())) {
+      mealPlan.startDate = planStartDate;
+    }
+    
+    if (!mealPlan.endDate || isNaN(new Date(mealPlan.endDate).getTime())) {
+      mealPlan.endDate = new Date(mealPlan.startDate);
+      if (mealPlan.type === 'weekly') {
+        mealPlan.endDate.setDate(mealPlan.endDate.getDate() + 6);
+      }
+    }
+    
+    // Save the new meal plan
+    const savedPlan = new MealPlan(mealPlan);
+    await savedPlan.save();
+    
+    res.status(201).json({
+      message: 'Previous plans archived and new plan created',
+      mealPlan: savedPlan,
+      archivedCount: await MealPlan.countDocuments({ 
+        userId: req.userId, 
+        status: 'archived' 
+      })
+    });
+  } catch (error) {
+    console.error('Archive and create error:', error);
+    res.status(500).json({ 
+      message: 'Server error while creating new plan',
+      error: error.message 
+    });
+  }
+});
 
-// Get recipe by ID - PUBLIC ENDPOINT
-router.get('/recipes/:id', async (req, res) => {
+// Get all meal plans with pagination
+router.get('/meal-plans/all', auth, async (req, res) => {
+  try {
+    const { 
+      page = 1, 
+      limit = 10, 
+      status = 'all',
+      sortBy = 'createdAt',
+      order = 'desc' 
+    } = req.query;
+    
+    const filter = { userId: req.userId };
+    
+    if (status !== 'all') {
+      filter.status = status;
+    }
+    
+    const skip = (page - 1) * limit;
+    const sortOrder = order === 'asc' ? 1 : -1;
+    
+    const [mealPlans, total] = await Promise.all([
+      MealPlan.find(filter)
+        .sort({ [sortBy]: sortOrder })
+        .skip(skip)
+        .limit(parseInt(limit))
+        .select('-dailyPlans'), // Exclude daily plans for list view
+      MealPlan.countDocuments(filter)
+    ]);
+    
+    res.json({
+      mealPlans,
+      pagination: {
+        page: parseInt(page),
+        limit: parseInt(limit),
+        total,
+        pages: Math.ceil(total / limit)
+      }
+    });
+  } catch (error) {
+    console.error('Get all meal plans error:', error);
+    res.status(500).json({ message: 'Server error while fetching meal plans' });
+  }
+});
+
+// =====================
+// RECIPES & SEARCH
+// =====================
+
+// Search recipes
+router.get('/recipes/search', auth, async (req, res) => {
+  try {
+    const { query, dietary, allergies, cuisine, maxCalories, maxTime, limit = 10 } = req.query;
+    
+    const filter = {};
+    
+    if (query) {
+      filter.$or = [
+        { title: { $regex: query, $options: 'i' } },
+        { description: { $regex: query, $options: 'i' } },
+        { 'ingredients.name': { $regex: query, $options: 'i' } }
+      ];
+    }
+    
+    if (dietary) {
+      filter.dietaryTags = { $in: dietary.split(',') };
+    }
+    
+    if (allergies) {
+      filter.allergens = { $nin: allergies.split(',') };
+    }
+    
+    if (cuisine) {
+      filter.cuisine = cuisine;
+    }
+    
+    if (maxCalories) {
+      filter['nutritionalInfo.calories'] = { $lte: parseInt(maxCalories) };
+    }
+    
+    if (maxTime) {
+      filter.totalTime = { $lte: parseInt(maxTime) };
+    }
+    
+    const recipes = await Recipe.find(filter).limit(parseInt(limit));
+    
+    res.json({ recipes });
+  } catch (error) {
+    console.error('Search recipes error:', error);
+    res.status(500).json({ message: 'Server error while searching recipes' });
+  }
+});
+
+// Get recipe by ID
+router.get('/recipes/:id', auth, async (req, res) => {
   try {
     const recipe = await Recipe.findById(req.params.id);
     
     if (!recipe) {
-      // Check if it's a mock recipe
-      const mockRecipes = getMockRecipes();
-      const mockRecipe = mockRecipes.find(r => r._id === req.params.id);
-      if (mockRecipe) {
-        return res.json({ recipe: mockRecipe });
-      }
       return res.status(404).json({ message: 'Recipe not found' });
     }
     
-    res.json({ recipe });
+    res.json(recipe);
   } catch (error) {
     console.error('Get recipe error:', error);
     res.status(500).json({ message: 'Server error while fetching recipe' });
   }
 });
 
-// Generate custom recipe - Requires auth
+// Generate custom recipe
 router.post('/recipes/generate', auth, async (req, res) => {
   try {
     const { requirements = {} } = req.body;
-    
     const preferences = await UserPreferences.findOne({ userId: req.userId });
     
-    if (!preferences) {
-      // Use default preferences if not found
-      preferences = {
-        dietaryPreferences: [],
-        allergies: [],
-        cuisinePreferences: [],
-        calorieTarget: 2000
-      };
-    }
-    
-    let generatedRecipe;
-    try {
-      generatedRecipe = await ragService.generateCustomRecipe(
-        preferences,
-        requirements
-      );
-    } catch (genError) {
-      console.log('AI generation failed, using fallback');
-      // Fallback to a template recipe
-      generatedRecipe = generateTemplateRecipe(requirements, preferences);
-    }
+    const recipe = await ragService.generateCustomRecipe(preferences, requirements);
     
     // Save the generated recipe
-    const recipe = new Recipe(generatedRecipe);
-    await recipe.save();
+    const newRecipe = new Recipe({
+      ...recipe,
+      isCustom: true,
+      createdBy: req.userId
+    });
+    
+    await newRecipe.save();
     
     res.status(201).json({
-      message: 'Recipe generated successfully',
-      recipe
+      message: 'Custom recipe generated successfully',
+      recipe: newRecipe
     });
   } catch (error) {
     console.error('Generate recipe error:', error);
@@ -938,50 +953,17 @@ router.post('/recipes/generate', auth, async (req, res) => {
   }
 });
 
-// Adjust recipe portions - PUBLIC ENDPOINT
-router.post('/recipes/:id/adjust', async (req, res) => {
+// Adjust recipe portions
+router.post('/recipes/:id/adjust', auth, async (req, res) => {
   try {
     const { servings } = req.body;
-    
-    if (!servings || servings < 1 || servings > 20) {
-      return res.status(400).json({ message: 'Invalid servings (1-20)' });
-    }
-    
     const recipe = await Recipe.findById(req.params.id);
     
     if (!recipe) {
-      // Try mock recipe
-      const mockRecipes = getMockRecipes();
-      const mockRecipe = mockRecipes.find(r => r._id === req.params.id);
-      if (mockRecipe) {
-        const adjustedRecipe = adjustMockRecipe(mockRecipe, servings);
-        return res.json({
-          message: 'Recipe adjusted successfully',
-          recipe: adjustedRecipe
-        });
-      }
       return res.status(404).json({ message: 'Recipe not found' });
     }
     
-    // Adjust the recipe
-    const ratio = servings / recipe.servings;
-    const adjustedRecipe = {
-      ...recipe.toObject(),
-      servings,
-      ingredients: recipe.ingredients.map(ing => ({
-        ...ing,
-        quantity: Math.round(ing.quantity * ratio * 10) / 10
-      })),
-      nutrition: {
-        calories: Math.round(recipe.nutrition.calories * ratio),
-        protein: Math.round(recipe.nutrition.protein * ratio),
-        carbs: Math.round(recipe.nutrition.carbs * ratio),
-        fat: Math.round(recipe.nutrition.fat * ratio),
-        fiber: Math.round((recipe.nutrition.fiber || 0) * ratio),
-        sugar: Math.round((recipe.nutrition.sugar || 0) * ratio),
-        sodium: Math.round((recipe.nutrition.sodium || 0) * ratio)
-      }
-    };
+    const adjustedRecipe = await nutritionCalculator.adjustPortions(recipe, servings);
     
     res.json({
       message: 'Recipe adjusted successfully',
@@ -993,47 +975,31 @@ router.post('/recipes/:id/adjust', async (req, res) => {
   }
 });
 
-// Generate ingredient substitutions - Can work without auth
-router.post('/recipes/substitute', async (req, res) => {
+// Ingredient substitution
+router.post('/recipes/:id/substitute', auth, async (req, res) => {
   try {
-    const { ingredient, reason = 'preference' } = req.body;
+    const { ingredientId, reason } = req.body;
+    const recipe = await Recipe.findById(req.params.id);
     
-    if (!ingredient) {
-      return res.status(400).json({ message: 'Ingredient name required' });
+    if (!recipe) {
+      return res.status(404).json({ message: 'Recipe not found' });
     }
     
-    let preferences = null;
-    // Try to get user preferences if authenticated
-    if (req.headers.authorization) {
-      try {
-        const token = req.headers.authorization.replace('Bearer ', '');
-        const decoded = jwt.verify(token, process.env.JWT_SECRET);
-        preferences = await UserPreferences.findOne({ userId: decoded.userId });
-      } catch (e) {
-        // Continue without preferences
-      }
-    }
-    
-    // Generate substitutions
-    let substitutions;
-    try {
-      substitutions = await ragService.generateSubstitutions(
-        ingredient,
-        reason,
-        preferences
-      );
-    } catch (subError) {
-      // Fallback to common substitutions
-      substitutions = getCommonSubstitutions(ingredient);
-    }
+    const preferences = await UserPreferences.findOne({ userId: req.userId });
+    const substitution = await ragService.suggestSubstitution(
+      recipe,
+      ingredientId,
+      preferences,
+      reason
+    );
     
     res.json({
-      message: 'Substitutions generated successfully',
-      substitutions
+      message: 'Substitution suggested successfully',
+      substitution
     });
   } catch (error) {
-    console.error('Generate substitutions error:', error);
-    res.status(500).json({ message: 'Server error while generating substitutions' });
+    console.error('Substitute ingredient error:', error);
+    res.status(500).json({ message: 'Server error while suggesting substitution' });
   }
 });
 
@@ -1041,6 +1007,7 @@ router.post('/recipes/substitute', async (req, res) => {
 // SHOPPING LIST
 // =====================
 
+// Generate shopping list
 router.get('/shopping-list', auth, async (req, res) => {
   try {
     const { mealPlanId, startDate, endDate } = req.query;
@@ -1052,27 +1019,33 @@ router.get('/shopping-list', auth, async (req, res) => {
         _id: mealPlanId,
         userId: req.userId
       });
-    } else if (startDate && endDate) {
+    } else {
+      // Get active meal plan
       mealPlan = await MealPlan.findOne({
         userId: req.userId,
-        startDate: { $lte: new Date(startDate) },
-        endDate: { $gte: new Date(endDate) }
+        status: 'active',
+        startDate: { $lte: new Date() },
+        endDate: { $gte: new Date() }
       });
-    } else {
-      // Get the most recent meal plan
-      mealPlan = await MealPlan.findOne({ userId: req.userId })
-        .sort({ createdAt: -1 });
     }
     
     if (!mealPlan) {
       return res.status(404).json({ message: 'No meal plan found' });
     }
     
-    const shoppingList = await shoppingListService.generateFromMealPlan(mealPlan);
+    const shoppingList = await shoppingListService.generateShoppingList(
+      mealPlan,
+      startDate,
+      endDate
+    );
     
     res.json({
       shoppingList,
-      mealPlanId: mealPlan._id
+      mealPlanId: mealPlan._id,
+      period: {
+        start: startDate || mealPlan.startDate,
+        end: endDate || mealPlan.endDate
+      }
     });
   } catch (error) {
     console.error('Generate shopping list error:', error);
@@ -1083,27 +1056,28 @@ router.get('/shopping-list', auth, async (req, res) => {
 // Update shopping list
 router.put('/shopping-list', auth, async (req, res) => {
   try {
-    const { items, action } = req.body;
+    const { mealPlanId, items } = req.body;
     
-    // Process the shopping list update
-    let updatedList;
+    const mealPlan = await MealPlan.findOne({
+      _id: mealPlanId,
+      userId: req.userId
+    });
     
-    switch(action) {
-      case 'adjust':
-        // Adjust quantities
-        updatedList = items;
-        break;
-      case 'remove':
-        // Remove items
-        updatedList = items.filter(item => !item.removed);
-        break;
-      default:
-        updatedList = items;
+    if (!mealPlan) {
+      return res.status(404).json({ message: 'Meal plan not found' });
     }
+    
+    mealPlan.shoppingList = {
+      generated: true,
+      items: items,
+      lastUpdated: new Date()
+    };
+    
+    await mealPlan.save();
     
     res.json({
       message: 'Shopping list updated successfully',
-      shoppingList: updatedList
+      shoppingList: mealPlan.shoppingList
     });
   } catch (error) {
     console.error('Update shopping list error:', error);
@@ -1115,11 +1089,12 @@ router.put('/shopping-list', auth, async (req, res) => {
 // NUTRITIONAL ANALYSIS
 // =====================
 
+// Get daily nutrition analysis
 router.get('/analysis/daily', auth, async (req, res) => {
   try {
-    const { date = new Date().toISOString() } = req.query;
+    const { date = new Date() } = req.query;
     
-    const analysis = await nutritionAnalysisService.analyzeDailyIntake(
+    const analysis = await nutritionAnalysisService.analyzeDailyNutrition(
       req.userId,
       new Date(date)
     );
@@ -1127,15 +1102,16 @@ router.get('/analysis/daily', auth, async (req, res) => {
     res.json(analysis);
   } catch (error) {
     console.error('Daily analysis error:', error);
-    res.status(500).json({ message: 'Server error while analyzing daily nutrition' });
+    res.status(500).json({ message: 'Server error while analyzing nutrition' });
   }
 });
 
+// Get weekly nutrition analysis
 router.get('/analysis/weekly', auth, async (req, res) => {
   try {
-    const { startDate = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString() } = req.query;
+    const { startDate = new Date() } = req.query;
     
-    const analysis = await nutritionAnalysisService.analyzeWeeklyIntake(
+    const analysis = await nutritionAnalysisService.analyzeWeeklyNutrition(
       req.userId,
       new Date(startDate)
     );
@@ -1143,23 +1119,25 @@ router.get('/analysis/weekly', auth, async (req, res) => {
     res.json(analysis);
   } catch (error) {
     console.error('Weekly analysis error:', error);
-    res.status(500).json({ message: 'Server error while analyzing weekly nutrition' });
+    res.status(500).json({ message: 'Server error while analyzing nutrition' });
   }
 });
 
+// Get AI-powered nutrition analysis
 router.post('/analysis/ai', auth, async (req, res) => {
   try {
-    const { period = 'daily', date } = req.body;
+    const { period = 'week', goals } = req.body;
     
-    const preferences = await UserPreferences.findOne({ userId: req.userId });
     const analysis = await nutritionAnalysisService.generateAIAnalysis(
       req.userId,
-      preferences,
       period,
-      date
+      goals
     );
     
-    res.json(analysis);
+    res.json({
+      analysis,
+      generatedAt: new Date()
+    });
   } catch (error) {
     console.error('AI analysis error:', error);
     res.status(500).json({ message: 'Server error while generating AI analysis' });
@@ -1170,9 +1148,10 @@ router.post('/analysis/ai', auth, async (req, res) => {
 // INGREDIENTS
 // =====================
 
-router.get('/ingredients/search', async (req, res) => {
+// Search ingredients
+router.get('/ingredients/search', auth, async (req, res) => {
   try {
-    const { query = '', category } = req.query;
+    const { query, category, limit = 20 } = req.query;
     
     const filter = {};
     
@@ -1184,16 +1163,11 @@ router.get('/ingredients/search', async (req, res) => {
       filter.category = category;
     }
     
-    const ingredients = await Ingredient.find(filter)
-      .limit(50)
-      .select('label category unit nutrition');
+    const ingredients = await Ingredient.find(filter).limit(parseInt(limit));
     
-    res.json({
-      ingredients,
-      count: ingredients.length
-    });
+    res.json({ ingredients });
   } catch (error) {
-    console.error('Ingredient search error:', error);
+    console.error('Search ingredients error:', error);
     res.status(500).json({ message: 'Server error while searching ingredients' });
   }
 });
@@ -1202,7 +1176,8 @@ router.get('/ingredients/search', async (req, res) => {
 // DATA INITIALIZATION
 // =====================
 
-router.post('/init-data', async (req, res) => {
+// Initialize sample data (for development)
+router.post('/init-data', auth, async (req, res) => {
   try {
     // Check if data already exists
     const recipeCount = await Recipe.countDocuments();
@@ -1211,550 +1186,68 @@ router.post('/init-data', async (req, res) => {
     if (recipeCount > 100 && ingredientCount > 100) {
       return res.json({
         message: 'Data already initialized',
-        recipes: recipeCount,
-        ingredients: ingredientCount
+        counts: {
+          recipes: recipeCount,
+          ingredients: ingredientCount
+        }
       });
     }
     
-    // Add some sample recipes if none exist
-    if (recipeCount === 0) {
-      const mockRecipes = getMockRecipes();
-      for (const recipe of mockRecipes) {
-        const newRecipe = new Recipe(recipe);
-        await newRecipe.save();
-      }
-    }
+    // Initialize data using the services
+    const result = await ragService.initializeData();
     
     res.json({
-      message: 'Sample data initialized',
-      recipes: await Recipe.countDocuments(),
-      ingredients: await Ingredient.countDocuments()
+      message: 'Data initialized successfully',
+      result
     });
   } catch (error) {
-    console.error('Initialize data error:', error);
+    console.error('Init data error:', error);
     res.status(500).json({ message: 'Server error while initializing data' });
   }
 });
 
-// =====================
-// HELPER FUNCTIONS
-// =====================
-
 // Helper function to calculate nutrition score
 function calculateNutritionScore(preferences) {
-  let score = 50; // Base score
+  let score = 0;
+  let factors = 0;
   
-  // Add points for completed sections
-  if (preferences.dietaryPreferences?.length > 0) score += 10;
-  if (preferences.allergies?.length > 0) score += 5;
-  if (preferences.cuisinePreferences?.length > 0) score += 5;
-  if (preferences.nutritionalTargets?.dailyCalories !== 2000) score += 10; // Customized
-  if (preferences.mealPreferences?.mealsPerDay) score += 5;
-  if (preferences.cookingPreferences?.skillLevel) score += 5;
-  if (preferences.healthProfileLink?.syncEnabled) score += 10; // Synced with health
-  
-  return Math.min(100, score);
-}
-
-function getMockRecipes() {
-  return [
-    {
-      _id: 'mock1',
-      title: 'Healthy Quinoa Bowl',
-      description: 'A nutritious and filling quinoa bowl with vegetables',
-      cuisine: 'mediterranean',
-      mealType: 'lunch',
-      cookingTime: 25,
-      servings: 2,
-      difficulty: 'easy',
-      ingredients: [
-        { name: 'Quinoa', quantity: 200, unit: 'g', category: 'grain', notes: 'rinse before cooking' },
-        { name: 'Cherry tomatoes', quantity: 150, unit: 'g', category: 'vegetable' },
-        { name: 'Cucumber', quantity: 100, unit: 'g', category: 'vegetable', notes: 'diced' },
-        { name: 'Feta cheese', quantity: 50, unit: 'g', category: 'dairy', notes: 'crumbled' },
-        { name: 'Olive oil', quantity: 2, unit: 'tbsp', category: 'fat' },
-        { name: 'Lemon juice', quantity: 1, unit: 'tbsp', category: 'other' },
-        { name: 'Fresh mint', quantity: 10, unit: 'g', category: 'herb', notes: 'chopped' }
-      ],
-      instructions: [
-        'Rinse quinoa thoroughly under cold water',
-        'Cook quinoa according to package instructions (typically 15 minutes in boiling water)',
-        'Let quinoa cool to room temperature',
-        'Dice cucumber and halve cherry tomatoes',
-        'Mix vegetables with cooled quinoa in a large bowl',
-        'Crumble feta cheese on top',
-        'Drizzle with olive oil and lemon juice',
-        'Garnish with fresh mint',
-        'Season with salt and pepper to taste'
-      ],
-      nutrition: {
-        calories: 380,
-        protein: 14,
-        carbs: 52,
-        fat: 15,
-        fiber: 8,
-        sugar: 6,
-        sodium: 320
-      },
-      dietaryInfo: {
-        isVegetarian: true,
-        isGlutenFree: true,
-        allergens: ['dairy']
-      },
-      tips: [
-        'Add grilled chicken for extra protein',
-        'Can be made vegan by substituting feta with avocado',
-        'Stores well in the fridge for up to 3 days'
-      ],
-      variations: [
-        { name: 'Mexican Style', description: 'Add black beans, corn, and avocado with lime dressing' },
-        { name: 'Asian Fusion', description: 'Use edamame, sesame seeds, and ginger-soy dressing' },
-        { name: 'Protein Boost', description: 'Add chickpeas or grilled tofu for extra protein' }
-      ]
-    },
-    {
-      _id: 'mock2',
-      title: 'Grilled Chicken Salad',
-      description: 'Fresh and protein-rich salad with perfectly grilled chicken',
-      cuisine: 'american',
-      mealType: 'dinner',
-      cookingTime: 20,
-      servings: 2,
-      difficulty: 'easy',
-      ingredients: [
-        { name: 'Chicken breast', quantity: 300, unit: 'g', category: 'protein' },
-        { name: 'Mixed greens', quantity: 200, unit: 'g', category: 'vegetable' },
-        { name: 'Avocado', quantity: 1, unit: 'unit', category: 'vegetable', notes: 'sliced' },
-        { name: 'Cherry tomatoes', quantity: 100, unit: 'g', category: 'vegetable' },
-        { name: 'Red onion', quantity: 50, unit: 'g', category: 'vegetable', notes: 'thinly sliced' },
-        { name: 'Balsamic vinegar', quantity: 2, unit: 'tbsp', category: 'other' },
-        { name: 'Olive oil', quantity: 1, unit: 'tbsp', category: 'fat' }
-      ],
-      instructions: [
-        'Season chicken breast with salt, pepper, and herbs',
-        'Preheat grill or grill pan to medium-high heat',
-        'Grill chicken for 6-7 minutes per side until cooked through',
-        'Let chicken rest for 5 minutes, then slice',
-        'Arrange mixed greens on serving plates',
-        'Top with sliced chicken, avocado, tomatoes, and onion',
-        'Whisk together balsamic vinegar and olive oil',
-        'Drizzle dressing over salad',
-        'Serve immediately'
-      ],
-      nutrition: {
-        calories: 420,
-        protein: 38,
-        carbs: 15,
-        fat: 24,
-        fiber: 9,
-        sugar: 5,
-        sodium: 280
-      },
-      dietaryInfo: {
-        isGlutenFree: true,
-        isDairyFree: true,
-        isHighProtein: true
-      },
-      tips: [
-        'Marinate chicken for 30 minutes for extra flavor',
-        'Can substitute chicken with salmon or tofu',
-        'Add nuts or seeds for extra crunch'
-      ],
-      variations: [
-        { name: 'Caesar Style', description: 'Add parmesan, croutons, and Caesar dressing' },
-        { name: 'Mediterranean', description: 'Include olives, feta, and Greek dressing' }
-      ]
-    },
-    {
-      _id: 'mock3',
-      title: 'Vegetable Stir-Fry',
-      description: 'Quick and colorful vegetable stir-fry with Asian flavors',
-      cuisine: 'chinese',
-      mealType: 'dinner',
-      cookingTime: 15,
-      servings: 2,
-      difficulty: 'easy',
-      ingredients: [
-        { name: 'Broccoli', quantity: 150, unit: 'g', category: 'vegetable', notes: 'cut into florets' },
-        { name: 'Bell peppers', quantity: 150, unit: 'g', category: 'vegetable', notes: 'sliced' },
-        { name: 'Carrots', quantity: 100, unit: 'g', category: 'vegetable', notes: 'julienned' },
-        { name: 'Soy sauce', quantity: 2, unit: 'tbsp', category: 'other' },
-        { name: 'Garlic', quantity: 2, unit: 'unit', category: 'vegetable', notes: 'minced' },
-        { name: 'Ginger', quantity: 1, unit: 'tbsp', category: 'spice', notes: 'grated' },
-        { name: 'Sesame oil', quantity: 1, unit: 'tbsp', category: 'fat' },
-        { name: 'Rice', quantity: 200, unit: 'g', category: 'grain', notes: 'cooked' }
-      ],
-      instructions: [
-        'Cook rice according to package instructions',
-        'Heat sesame oil in a wok or large pan over high heat',
-        'Add minced garlic and ginger, stir-fry for 30 seconds',
-        'Add harder vegetables (broccoli, carrots) first',
-        'Stir-fry for 3-4 minutes',
-        'Add bell peppers and continue stir-frying for 2-3 minutes',
-        'Add soy sauce and toss to combine',
-        'Vegetables should be tender-crisp',
-        'Serve immediately over cooked rice'
-      ],
-      nutrition: {
-        calories: 320,
-        protein: 8,
-        carbs: 58,
-        fat: 7,
-        fiber: 8,
-        sugar: 12,
-        sodium: 580
-      },
-      dietaryInfo: {
-        isVegetarian: true,
-        isVegan: true,
-        isDairyFree: true
-      },
-      tips: [
-        'Keep vegetables moving in the pan for even cooking',
-        'Prep all ingredients before starting to cook',
-        'Add cashews or tofu for protein'
-      ],
-      variations: [
-        { name: 'Thai Style', description: 'Use Thai basil, lime, and fish sauce' },
-        { name: 'Teriyaki', description: 'Add teriyaki sauce and sesame seeds' },
-        { name: 'Spicy Version', description: 'Add chili flakes or sriracha sauce' }
-      ]
-    }
-  ];
-}
-
-// This will fix any nutrition structure issues
-
-function fixNutritionStructure(recipe) {
-  // If recipe is a Mongoose document, convert to plain object
-  const recipeObj = recipe.toObject ? recipe.toObject() : recipe;
-  
-  // Check if nutrition exists and has the right structure
-  let nutrition = recipeObj.nutrition;
-  
-  // If nutrition doesn't exist or is empty, create default
-  if (!nutrition || Object.keys(nutrition).length === 0) {
-    console.log(`Recipe "${recipeObj.title}" has no nutrition data, adding defaults`);
-    nutrition = {
-      calories: 400,
-      protein: 20,
-      carbs: 45,
-      fat: 15,
-      fiber: 6,
-      sugar: 8,
-      sodium: 400
-    };
-  } 
-  // Check if nutrition has the wrong structure (like nested servings)
-  else if (nutrition.servings !== undefined && typeof nutrition.servings === 'number') {
-    // It might be using the Recipe schema structure with nested values
-    console.log(`Recipe "${recipeObj.title}" has nested nutrition structure`);
-    
-    // Try to extract values - they might be at the root level
-    nutrition = {
-      calories: nutrition.calories || 400,
-      protein: nutrition.protein || 20,
-      carbs: nutrition.carbs || 45,
-      fat: nutrition.fat || 15,
-      fiber: nutrition.fiber || 6,
-      sugar: nutrition.sugar || 8,
-      sodium: nutrition.sodium || 400
-    };
-  }
-  // Check if values exist but are undefined
-  else if (nutrition.calories === undefined) {
-    console.log(`Recipe "${recipeObj.title}" has nutrition object but no values`);
-    
-    // Provide defaults for missing values
-    nutrition = {
-      calories: nutrition.calories || 400,
-      protein: nutrition.protein || 20,
-      carbs: nutrition.carbs || 45,
-      fat: nutrition.fat || 15,
-      fiber: nutrition.fiber || 6,
-      sugar: nutrition.sugar || 8,
-      sodium: nutrition.sodium || 400
-    };
+  // Check if dietary preferences are set
+  if (preferences.dietaryPreferences && preferences.dietaryPreferences.length > 0) {
+    score += 20;
+    factors++;
   }
   
-  // Return the fixed recipe
-  return {
-    ...recipeObj,
-    nutrition: nutrition
-  };
-}
-
-// Update your /recipes/search endpoint
-router.get('/recipes/search', async (req, res) => {
-  try {
-    const { q: query = '', dietary, allergies, maxCalories, maxTime, cuisine, mealType } = req.query;
-    
-    let recipes = [];
-    
-    // If no query, get default recipes
-    if (!query) {
-      // Try database first
-      const dbRecipes = await Recipe.find({})
-        .limit(20)
-        .lean(); // Use lean() to get plain objects instead of Mongoose documents
-      
-      if (dbRecipes && dbRecipes.length > 0) {
-        console.log('Found database recipes:', dbRecipes.length);
-        recipes = dbRecipes;
-      } else {
-        console.log('No database recipes, using mock data');
-        recipes = getMockRecipes();
-      }
-    } else {
-      // Search with query
-      const searchRegex = new RegExp(query.split(' ').join('|'), 'i');
-      
-      const dbRecipes = await Recipe.find({
-        $or: [
-          { title: searchRegex },
-          { description: searchRegex },
-          { 'ingredients.name': searchRegex }
-        ]
-      })
-      .limit(20)
-      .lean(); // Use lean() here too
-      
-      if (dbRecipes && dbRecipes.length > 0) {
-        recipes = dbRecipes;
-      } else {
-        // Search mock recipes
-        const mockRecipes = getMockRecipes();
-        recipes = mockRecipes.filter(r => 
-          r.title.toLowerCase().includes(query.toLowerCase()) ||
-          (r.description && r.description.toLowerCase().includes(query.toLowerCase())) ||
-          r.ingredients.some(ing => ing.name.toLowerCase().includes(query.toLowerCase()))
-        );
-        
-        if (recipes.length === 0) {
-          recipes = mockRecipes; // Return all if no matches
-        }
-      }
-    }
-    
-    // Fix nutrition structure for all recipes
-    const fixedRecipes = recipes.map(recipe => {
-      const fixed = fixNutritionStructure(recipe);
-      
-      // Log what we're sending
-      if (recipes.indexOf(recipe) === 0) {
-        console.log('First recipe being sent:');
-        console.log('  Title:', fixed.title);
-        console.log('  Nutrition:', fixed.nutrition);
-      }
-      
-      return fixed;
-    });
-    
-    console.log(`Sending ${fixedRecipes.length} recipes with fixed nutrition`);
-    
-    res.json({
-      recipes: fixedRecipes,
-      count: fixedRecipes.length,
-      filters: {}
-    });
-    
-  } catch (error) {
-    console.error('Recipe search error:', error);
-    
-    // Fallback to mock recipes with fixed nutrition
-    const mockRecipes = getMockRecipes();
-    const fixedRecipes = mockRecipes.map(recipe => fixNutritionStructure(recipe));
-    
-    res.json({
-      recipes: fixedRecipes,
-      count: fixedRecipes.length,
-      filters: {},
-      error: 'Using fallback data'
-    });
+  // Check if calorie target is reasonable
+  if (preferences.calorieTarget >= 1200 && preferences.calorieTarget <= 4000) {
+    score += 20;
+    factors++;
   }
-});
-
-// Also add this test endpoint to verify mock recipes work
-router.get('/recipes/test-mock', async (req, res) => {
-  const mockRecipes = getMockRecipes();
-  const firstRecipe = mockRecipes[0];
   
-  res.json({
-    message: 'Mock recipe test',
-    recipeTitle: firstRecipe.title,
-    hasNutrition: !!firstRecipe.nutrition,
-    nutritionStructure: firstRecipe.nutrition,
-    nutritionKeys: firstRecipe.nutrition ? Object.keys(firstRecipe.nutrition) : [],
-    calories: firstRecipe.nutrition?.calories,
-    protein: firstRecipe.nutrition?.protein
-  });
-});
-
-function adjustMockRecipe(recipe, servings) {
-  const ratio = servings / recipe.servings;
-  return {
-    ...recipe,
-    servings,
-    ingredients: recipe.ingredients.map(ing => ({
-      ...ing,
-      quantity: Math.round(ing.quantity * ratio * 10) / 10
-    })),
-    nutrition: {
-      calories: Math.round(recipe.nutrition.calories * ratio),
-      protein: Math.round(recipe.nutrition.protein * ratio),
-      carbs: Math.round(recipe.nutrition.carbs * ratio),
-      fat: Math.round(recipe.nutrition.fat * ratio),
-      fiber: Math.round(recipe.nutrition.fiber * ratio),
-      sugar: Math.round(recipe.nutrition.sugar * ratio),
-      sodium: Math.round(recipe.nutrition.sodium * ratio)
-    }
-  };
-}
-
-function generateTemplateRecipe(requirements, preferences) {
-  const templates = {
-    breakfast: {
-      title: 'Custom Breakfast Bowl',
-      description: 'A nutritious breakfast to start your day',
-      mealType: 'breakfast',
-      cookingTime: 15,
-      servings: 2,
-      ingredients: [
-        { name: 'Oats', quantity: 100, unit: 'g', category: 'grain' },
-        { name: 'Milk or alternative', quantity: 200, unit: 'ml', category: 'dairy' },
-        { name: 'Banana', quantity: 1, unit: 'unit', category: 'fruit' },
-        { name: 'Berries', quantity: 100, unit: 'g', category: 'fruit' },
-        { name: 'Honey', quantity: 1, unit: 'tbsp', category: 'other' }
-      ],
-      instructions: [
-        'Cook oats with milk according to package directions',
-        'Slice banana',
-        'Top cooked oats with banana and berries',
-        'Drizzle with honey',
-        'Serve warm'
-      ],
-      nutrition: {
-        calories: 350,
-        protein: 12,
-        carbs: 65,
-        fat: 8,
-        fiber: 8,
-        sugar: 25,
-        sodium: 100
-      }
-    },
-    lunch: {
-      title: 'Custom Power Lunch',
-      description: 'A balanced lunch for sustained energy',
-      mealType: 'lunch',
-      cookingTime: 20,
-      servings: 2,
-      ingredients: [
-        { name: 'Mixed vegetables', quantity: 300, unit: 'g', category: 'vegetable' },
-        { name: 'Protein source', quantity: 200, unit: 'g', category: 'protein' },
-        { name: 'Whole grain', quantity: 150, unit: 'g', category: 'grain' },
-        { name: 'Olive oil', quantity: 1, unit: 'tbsp', category: 'fat' }
-      ],
-      instructions: [
-        'Cook grain according to package directions',
-        'Prepare protein (grill, bake, or sauté)',
-        'Steam or roast vegetables',
-        'Combine all components',
-        'Drizzle with olive oil and season'
-      ],
-      nutrition: {
-        calories: 450,
-        protein: 30,
-        carbs: 50,
-        fat: 15,
-        fiber: 10,
-        sugar: 8,
-        sodium: 300
-      }
-    },
-    dinner: {
-      title: 'Custom Dinner Special',
-      description: 'A satisfying dinner to end your day',
-      mealType: 'dinner',
-      cookingTime: 30,
-      servings: 2,
-      ingredients: [
-        { name: 'Protein choice', quantity: 300, unit: 'g', category: 'protein' },
-        { name: 'Vegetables', quantity: 400, unit: 'g', category: 'vegetable' },
-        { name: 'Starch side', quantity: 200, unit: 'g', category: 'grain' },
-        { name: 'Cooking oil', quantity: 2, unit: 'tbsp', category: 'fat' }
-      ],
-      instructions: [
-        'Preheat oven or prepare cooking surface',
-        'Season and cook protein',
-        'Prepare vegetables',
-        'Cook starch side',
-        'Plate and serve together'
-      ],
-      nutrition: {
-        calories: 500,
-        protein: 35,
-        carbs: 45,
-        fat: 20,
-        fiber: 12,
-        sugar: 10,
-        sodium: 400
-      }
-    }
-  };
-  
-  const mealType = requirements.mealType || 'lunch';
-  const template = templates[mealType] || templates.lunch;
-  
-  return {
-    ...template,
-    cuisine: requirements.cuisine || 'international',
-    isCustom: true,
-    difficulty: 'easy',
-    dietaryInfo: {
-      isVegetarian: preferences.dietaryPreferences?.includes('vegetarian'),
-      isVegan: preferences.dietaryPreferences?.includes('vegan'),
-      isGlutenFree: preferences.dietaryPreferences?.includes('gluten_free')
-    },
-    tips: ['Customize ingredients based on preferences', 'Adjust seasoning to taste'],
-    variations: [
-      { name: 'Low Carb', description: 'Replace grains with cauliflower rice' },
-      { name: 'High Protein', description: 'Double the protein portion' }
-    ]
-  };
-}
-
-function getCommonSubstitutions(ingredient) {
-  const substitutions = {
-    'butter': [
-      { ingredient: 'Olive oil', ratio: '3:4', notes: 'Use 3/4 the amount', recommended: true },
-      { ingredient: 'Coconut oil', ratio: '1:1', notes: 'Same amount, adds coconut flavor', recommended: true },
-      { ingredient: 'Applesauce', ratio: '1:1', notes: 'For baking, reduces fat', recommended: false }
-    ],
-    'milk': [
-      { ingredient: 'Almond milk', ratio: '1:1', notes: 'Dairy-free alternative', recommended: true },
-      { ingredient: 'Oat milk', ratio: '1:1', notes: 'Creamy texture', recommended: true },
-      { ingredient: 'Coconut milk', ratio: '1:1', notes: 'Rich flavor', recommended: false }
-    ],
-    'egg': [
-      { ingredient: 'Flax egg', ratio: '1:1', notes: '1 tbsp flax + 3 tbsp water per egg', recommended: true },
-      { ingredient: 'Chia egg', ratio: '1:1', notes: '1 tbsp chia + 3 tbsp water per egg', recommended: true },
-      { ingredient: 'Banana', ratio: '1:1', notes: '1/4 cup mashed per egg', recommended: false }
-    ],
-    'default': [
-      { ingredient: 'Similar ingredient', ratio: '1:1', notes: 'Adjust to taste', recommended: true }
-    ]
-  };
-  
-  const lowerIngredient = ingredient.toLowerCase();
-  
-  for (const [key, subs] of Object.entries(substitutions)) {
-    if (lowerIngredient.includes(key)) {
-      return { originalIngredient: ingredient, substitutions: subs };
+  // Check if macro targets are balanced
+  const macros = preferences.nutritionalTargets?.macros;
+  if (macros) {
+    const total = (macros.protein?.percentage || 0) + 
+                  (macros.carbs?.percentage || 0) + 
+                  (macros.fat?.percentage || 0);
+    if (total >= 95 && total <= 105) {
+      score += 20;
+      factors++;
     }
   }
   
-  return { originalIngredient: ingredient, substitutions: substitutions.default };
+  // Check if meal timing is set
+  if (preferences.mealTiming && Object.keys(preferences.mealTiming).length >= 3) {
+    score += 20;
+    factors++;
+  }
+  
+  // Check if health profile is linked
+  if (preferences.healthProfileLink?.profileId) {
+    score += 20;
+    factors++;
+  }
+  
+  return factors > 0 ? Math.round(score) : 50;
 }
 
 module.exports = router;
