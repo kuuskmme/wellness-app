@@ -1,11 +1,9 @@
-// backend/utils/mealPlanningService.js
-
 const OpenAI = require('openai');
 const Recipe = require('../models/Recipe');
 const UserPreferences = require('../models/UserPreferences');
 const HealthProfile = require('../models/HealthProfile');
 
-// Initialize OpenAI only if API key exists
+// Initialize OpenAI with fallback
 let openai = null;
 if (process.env.OPENAI_API_KEY && process.env.OPENAI_API_KEY !== 'sk-fallback') {
   openai = new OpenAI({
@@ -13,42 +11,59 @@ if (process.env.OPENAI_API_KEY && process.env.OPENAI_API_KEY !== 'sk-fallback') 
   });
 }
 
-// Few-shot examples for each step
+// Few-shot examples for sequential prompting
 const FEW_SHOT_EXAMPLES = {
   step1: [
     {
-      input: {
-        bmi: 24.5,
-        goal: 'weight_loss',
-        activity: 'moderate',
-        allergies: ['nuts'],
-        dietary: ['vegetarian']
+      input: { 
+        age: 30, 
+        gender: 'male', 
+        weight: 80, 
+        activityLevel: 'moderate',
+        goal: 'maintenance' 
       },
       output: {
-        strategy: 'caloric_deficit',
-        calorieTarget: 1800,
-        macroSplit: { protein: 30, carbs: 40, fat: 30 },
+        strategy: 'balanced_nutrition',
+        calorieTarget: 2400,
+        macroSplit: { protein: 25, carbs: 45, fat: 30 },
+        mealFrequency: 3,
+        focus: 'sustained_energy'
+      }
+    },
+    {
+      input: { 
+        age: 25, 
+        gender: 'female', 
+        weight: 65, 
+        activityLevel: 'high',
+        goal: 'muscle_gain' 
+      },
+      output: {
+        strategy: 'high_protein',
+        calorieTarget: 2200,
+        macroSplit: { protein: 35, carbs: 40, fat: 25 },
         mealFrequency: 5,
-        restrictions: ['no_nuts', 'vegetarian_only'],
-        focus: 'high_protein_plant_based'
+        focus: 'muscle_recovery'
       }
     }
   ],
   step2: [
     {
       input: {
-        strategy: 'caloric_deficit',
-        calorieTarget: 1800,
-        mealFrequency: 5,
-        duration: 'daily'
+        strategy: 'balanced_nutrition',
+        calorieTarget: 2400,
+        mealFrequency: 3
       },
       output: {
-        structure: {
-          breakfast: { calories: 350, type: 'light' },
-          snack1: { calories: 150, type: 'protein' },
-          lunch: { calories: 500, type: 'balanced' },
-          snack2: { calories: 150, type: 'fruit' },
-          dinner: { calories: 650, type: 'hearty' }
+        mealStructure: {
+          breakfast: { calories: 600, type: 'balanced' },
+          lunch: { calories: 800, type: 'hearty' },
+          dinner: { calories: 1000, type: 'satisfying' }
+        },
+        timing: {
+          breakfast: '07:00-09:00',
+          lunch: '12:00-14:00',
+          dinner: '18:00-20:00'
         }
       }
     }
@@ -56,16 +71,16 @@ const FEW_SHOT_EXAMPLES = {
   step3: [
     {
       input: {
-        structure: { breakfast: { calories: 350 } },
-        restrictions: ['vegetarian'],
-        preferences: ['mediterranean']
+        meal: 'breakfast',
+        calories: 600,
+        preferences: ['vegetarian'],
+        allergies: ['nuts']
       },
       output: {
-        meal: {
-          name: 'Mediterranean Veggie Scramble',
-          type: 'breakfast',
-          nutrition: { calories: 350, protein: 18, carbs: 28, fat: 16 }
-        }
+        name: 'Mediterranean Breakfast Bowl',
+        ingredients: ['eggs', 'spinach', 'feta', 'tomatoes', 'whole grain toast'],
+        nutrition: { calories: 580, protein: 25, carbs: 60, fat: 22 },
+        cookingTime: 15
       }
     }
   ]
@@ -78,25 +93,18 @@ class MealPlanningService {
     this.topP = 0.9;
   }
 
-  // Main function to generate meal plan
+  // Main entry point for meal plan generation
   async generateMealPlan(userId, planRequest) {
-    // Check if OpenAI is available
-    if (!openai) {
-      console.log('OpenAI not configured, using fallback meal generation');
-      return this.generateFallbackPlan(userId, planRequest);
-    }
-
     try {
-      // Get user data
       const preferences = await UserPreferences.findOne({ userId });
       const healthProfile = await HealthProfile.findOne({ userId });
-      
-      if (!preferences || !healthProfile) {
-        console.log('User data not found, using fallback');
+
+      if (!openai) {
+        console.log('No OpenAI API key, using fallback generation');
         return this.generateFallbackPlan(userId, planRequest);
       }
 
-      // Sequential prompting process
+      // Sequential prompting - 3 steps minimum
       const step1Result = await this.step1AnalyzeProfile(healthProfile, preferences);
       const step2Result = await this.step2BuildStructure(step1Result, planRequest);
       const step3Result = await this.step3GenerateDetails(step2Result, preferences, planRequest);
@@ -131,13 +139,35 @@ class MealPlanningService {
       return this.getDefaultStrategy(healthProfile, preferences);
     }
 
-    const prompt = `Analyze this profile and create a meal planning strategy...`;
+    const prompt = `Analyze this profile and create a meal planning strategy.
+
+User Profile:
+- Age: ${healthProfile?.demographics?.age || 30}
+- Gender: ${healthProfile?.demographics?.gender || 'not specified'}
+- Weight: ${healthProfile?.physicalMetrics?.weight?.value || 70} kg
+- Height: ${healthProfile?.physicalMetrics?.height?.value || 170} cm
+- Activity Level: ${healthProfile?.lifestyle?.activityLevel || 'moderate'}
+- Goal: ${healthProfile?.goals?.primary || 'general health'}
+
+Dietary Preferences: ${preferences?.dietaryPreferences?.join(', ') || 'none'}
+Allergies: ${preferences?.allergies?.join(', ') || 'none'}
+
+${this.formatFewShotExamples('step1')}
+
+Create a nutrition strategy with:
+1. Strategy name
+2. Daily calorie target
+3. Macro split (protein%, carbs%, fat%)
+4. Meal frequency
+5. Key focus areas
+
+Return as JSON.`;
 
     try {
       const response = await openai.chat.completions.create({
         model: this.modelName,
         messages: [
-          { role: 'system', content: 'You are a professional nutritionist.' },
+          { role: 'system', content: 'You are a professional nutritionist creating personalized meal strategies.' },
           { role: 'user', content: prompt }
         ],
         temperature: 0.3,
@@ -158,11 +188,38 @@ class MealPlanningService {
       return this.getDefaultMealStructure(strategy);
     }
 
-    // AI implementation...
+    const prompt = `Build a meal structure based on this strategy.
+
+Strategy:
+${JSON.stringify(strategy, null, 2)}
+
+Duration: ${planRequest.duration}
+Start Date: ${planRequest.startDate}
+
+${this.formatFewShotExamples('step2')}
+
+Create a meal structure with:
+1. Calorie distribution per meal
+2. Meal timing recommendations
+3. Meal types (light/balanced/hearty)
+
+Return as JSON.`;
+
     try {
-      // ... existing AI code
-      return result;
+      const response = await openai.chat.completions.create({
+        model: this.modelName,
+        messages: [
+          { role: 'system', content: 'You are structuring meals based on nutritional strategy.' },
+          { role: 'user', content: prompt }
+        ],
+        temperature: 0.5,
+        top_p: 0.9,
+        response_format: { type: "json_object" }
+      });
+
+      return JSON.parse(response.choices[0].message.content);
     } catch (error) {
+      console.error('Step 2 error:', error);
       return this.getDefaultMealStructure(strategy);
     }
   }
@@ -173,17 +230,67 @@ class MealPlanningService {
       return this.generateBasicMeals(structure, preferences, planRequest);
     }
 
-    // AI implementation...
-    try {
-      // ... existing AI code
-      return result;
-    } catch (error) {
-      return this.generateBasicMeals(structure, preferences, planRequest);
+    const numDays = planRequest.duration === 'weekly' ? 7 : 1;
+    const days = [];
+
+    for (let day = 0; day < numDays; day++) {
+      const meals = [];
+      
+      for (const [mealType, mealInfo] of Object.entries(structure.mealStructure)) {
+        const prompt = `Generate a specific meal.
+
+Meal Type: ${mealType}
+Target Calories: ${mealInfo.calories}
+Dietary Preferences: ${preferences?.dietaryPreferences?.join(', ') || 'none'}
+Allergies: ${preferences?.allergies?.join(', ') || 'none'}
+Day: ${day + 1} of ${numDays}
+
+${this.formatFewShotExamples('step3')}
+
+Create a meal with:
+1. Name
+2. Ingredients list with quantities
+3. Nutrition breakdown
+4. Cooking time
+5. Instructions
+
+Return as JSON.`;
+
+        try {
+          const response = await openai.chat.completions.create({
+            model: this.modelName,
+            messages: [
+              { role: 'system', content: 'You are creating specific, delicious meals.' },
+              { role: 'user', content: prompt }
+            ],
+            temperature: this.temperature,
+            top_p: this.topP,
+            response_format: { type: "json_object" }
+          });
+
+          const mealDetails = JSON.parse(response.choices[0].message.content);
+          meals.push({
+            type: mealType,
+            ...mealDetails
+          });
+        } catch (error) {
+          console.error(`Step 3 error for ${mealType}:`, error);
+          // Use fallback meal
+          meals.push(this.getDefaultMeal(mealType, mealInfo.calories));
+        }
+      }
+
+      days.push({ 
+        date: new Date(planRequest.startDate).toISOString(),
+        meals 
+      });
     }
+
+    return { days };
   }
 
   // Helper: Get default strategy without AI
-  getDefaultStrategy(healthProfile, preferences) {
+  async getDefaultStrategy(healthProfile, preferences) {
     const bmr = this.calculateBMR(
       healthProfile?.physicalMetrics?.weight?.normalizedValue || 70,
       healthProfile?.physicalMetrics?.height?.normalizedValue || 170,
@@ -244,10 +351,23 @@ class MealPlanningService {
     return structure;
   }
 
-  // Generate basic meals without AI - WITH INGREDIENTS
+  // Generate basic meals without AI - WITH INGREDIENTS - FIXED
   generateBasicMeals(structure, preferences, planRequest) {
-    const numDays = planRequest.duration === 'weekly' ? 7 : 1;
+    const numDays = planRequest?.duration === 'weekly' ? 7 : 1;
     const days = [];
+
+    // Fix: Ensure we have a valid start date
+    let startDate;
+    if (planRequest?.startDate instanceof Date && !isNaN(planRequest.startDate.getTime())) {
+      startDate = new Date(planRequest.startDate.getTime());
+    } else if (typeof planRequest?.startDate === 'string') {
+      startDate = new Date(planRequest.startDate);
+      if (isNaN(startDate.getTime())) {
+        startDate = new Date();
+      }
+    } else {
+      startDate = new Date();
+    }
 
     const mealTemplates = {
       breakfast: [
@@ -297,63 +417,56 @@ class MealPlanningService {
         },
         { 
           name: 'Turkey Sandwich', 
-          calories: 450, protein: 25, carbs: 45, fat: 15,
+          calories: 450, protein: 28, carbs: 45, fat: 15,
           ingredients: [
-            { name: 'Turkey Slices', quantity: 100, unit: 'g' },
-            { name: 'Bread', quantity: 2, unit: 'slice' },
+            { name: 'Turkey Breast', quantity: 100, unit: 'g' },
+            { name: 'Whole Wheat Bread', quantity: 2, unit: 'slice' },
             { name: 'Lettuce', quantity: 20, unit: 'g' },
             { name: 'Tomato', quantity: 50, unit: 'g' },
-            { name: 'Mayonnaise', quantity: 1, unit: 'tbsp' },
-            { name: 'Cheese', quantity: 30, unit: 'g' }
+            { name: 'Mustard', quantity: 1, unit: 'tbsp' }
           ]
         },
         { 
-          name: 'Veggie Buddha Bowl', 
-          calories: 480, protein: 15, carbs: 65, fat: 18,
+          name: 'Quinoa Buddha Bowl', 
+          calories: 480, protein: 18, carbs: 65, fat: 16,
           ingredients: [
-            { name: 'Quinoa', quantity: 60, unit: 'g' },
-            { name: 'Mixed Vegetables', quantity: 200, unit: 'g' },
+            { name: 'Quinoa', quantity: 80, unit: 'g' },
+            { name: 'Mixed Vegetables', quantity: 150, unit: 'g' },
             { name: 'Chickpeas', quantity: 100, unit: 'g' },
-            { name: 'Avocado', quantity: 50, unit: 'g' },
             { name: 'Tahini Dressing', quantity: 2, unit: 'tbsp' }
           ]
         }
       ],
       dinner: [
         { 
-          name: 'Grilled Salmon with Quinoa', 
-          calories: 650, protein: 40, carbs: 50, fat: 25,
+          name: 'Grilled Salmon with Vegetables', 
+          calories: 550, protein: 40, carbs: 35, fat: 25,
           ingredients: [
             { name: 'Salmon Fillet', quantity: 180, unit: 'g' },
-            { name: 'Quinoa', quantity: 80, unit: 'g' },
             { name: 'Broccoli', quantity: 150, unit: 'g' },
-            { name: 'Olive Oil', quantity: 1, unit: 'tbsp' },
-            { name: 'Lemon', quantity: 1, unit: 'unit' },
-            { name: 'Garlic', quantity: 2, unit: 'unit' }
+            { name: 'Sweet Potato', quantity: 150, unit: 'g' },
+            { name: 'Olive Oil', quantity: 1, unit: 'tbsp' }
           ]
         },
         { 
-          name: 'Chicken Stir Fry', 
-          calories: 600, protein: 35, carbs: 55, fat: 20,
+          name: 'Chicken Stir-Fry', 
+          calories: 520, protein: 38, carbs: 50, fat: 18,
           ingredients: [
             { name: 'Chicken Breast', quantity: 150, unit: 'g' },
-            { name: 'Rice', quantity: 75, unit: 'g' },
-            { name: 'Mixed Stir Fry Vegetables', quantity: 200, unit: 'g' },
+            { name: 'Mixed Stir-Fry Vegetables', quantity: 200, unit: 'g' },
+            { name: 'Rice', quantity: 100, unit: 'g' },
             { name: 'Soy Sauce', quantity: 2, unit: 'tbsp' },
-            { name: 'Sesame Oil', quantity: 1, unit: 'tsp' },
-            { name: 'Ginger', quantity: 10, unit: 'g' }
+            { name: 'Sesame Oil', quantity: 1, unit: 'tsp' }
           ]
         },
         { 
-          name: 'Beef and Vegetable Stew', 
-          calories: 700, protein: 45, carbs: 40, fat: 30,
+          name: 'Vegetarian Pasta', 
+          calories: 500, protein: 18, carbs: 70, fat: 15,
           ingredients: [
-            { name: 'Beef Chunks', quantity: 200, unit: 'g' },
-            { name: 'Potato', quantity: 150, unit: 'g' },
-            { name: 'Carrots', quantity: 100, unit: 'g' },
-            { name: 'Onion', quantity: 100, unit: 'g' },
-            { name: 'Beef Broth', quantity: 250, unit: 'ml' },
-            { name: 'Tomato Paste', quantity: 2, unit: 'tbsp' }
+            { name: 'Whole Wheat Pasta', quantity: 100, unit: 'g' },
+            { name: 'Marinara Sauce', quantity: 150, unit: 'ml' },
+            { name: 'Mixed Vegetables', quantity: 150, unit: 'g' },
+            { name: 'Parmesan Cheese', quantity: 20, unit: 'g' }
           ]
         }
       ],
@@ -363,16 +476,14 @@ class MealPlanningService {
           calories: 200, protein: 5, carbs: 25, fat: 10,
           ingredients: [
             { name: 'Apple', quantity: 1, unit: 'unit' },
-            { name: 'Almond Butter', quantity: 2, unit: 'tbsp' }
+            { name: 'Almond Butter', quantity: 1, unit: 'tbsp' }
           ]
         },
         { 
-          name: 'Protein Shake', 
-          calories: 150, protein: 20, carbs: 10, fat: 3,
+          name: 'Greek Yogurt', 
+          calories: 150, protein: 12, carbs: 18, fat: 3,
           ingredients: [
-            { name: 'Protein Powder', quantity: 30, unit: 'g' },
-            { name: 'Milk', quantity: 250, unit: 'ml' },
-            { name: 'Banana', quantity: 0.5, unit: 'unit' }
+            { name: 'Greek Yogurt', quantity: 150, unit: 'g' }
           ]
         },
         { 
@@ -385,12 +496,20 @@ class MealPlanningService {
       ]
     };
 
+    // Generate meals for each day
     for (let day = 0; day < numDays; day++) {
       const meals = [];
       
-      Object.entries(structure.mealStructure || {}).forEach(([mealType, mealInfo]) => {
+      // Default meal structure if not provided
+      const mealStructure = structure?.mealStructure || {
+        breakfast: {},
+        lunch: {},
+        dinner: {}
+      };
+      
+      Object.keys(mealStructure).forEach(mealType => {
         const templateType = mealType.includes('snack') ? 'snack' : mealType;
-        const templates = mealTemplates[templateType] || mealTemplates.snack;
+        const templates = mealTemplates[templateType] || mealTemplates.lunch;
         const template = templates[day % templates.length];
         
         meals.push({
@@ -401,14 +520,15 @@ class MealPlanningService {
             protein: template.protein,
             carbs: template.carbs,
             fat: template.fat,
-            fiber: 5
+            fiber: 5,
+            sodium: 300,
+            sugar: 10
           },
           cookingTime: 20,
-          // CRITICAL: Add customRecipe with ingredients for shopping list
           customRecipe: {
             name: template.name,
             ingredients: template.ingredients,
-            instructions: ['Prepare and cook as directed'],
+            instructions: ['Prepare ingredients', 'Cook as directed', 'Serve and enjoy'],
             cookingTime: 20
           },
           alternatives: [
@@ -421,83 +541,297 @@ class MealPlanningService {
         });
       });
 
-      const currentDate = new Date(planRequest.startDate);
+      // Create a valid date for this day
+      const currentDate = new Date(startDate.getTime());
       currentDate.setDate(currentDate.getDate() + day);
       
+      // Only add day if date is valid
+      if (!isNaN(currentDate.getTime())) {
+        days.push({
+          date: currentDate.toISOString(),
+          meals: meals
+        });
+      }
+    }
+
+    // Ensure we have at least one day
+    if (days.length === 0) {
       days.push({
-        date: currentDate.toISOString(),
-        meals
+        date: new Date().toISOString(),
+        meals: [{
+          type: 'lunch',
+          name: 'Default Meal',
+          nutrition: {
+            calories: 400,
+            protein: 20,
+            carbs: 50,
+            fat: 15,
+            fiber: 5,
+            sodium: 300,
+            sugar: 10
+          },
+          cookingTime: 20,
+          customRecipe: {
+            name: 'Default Meal',
+            ingredients: [{ name: 'Mixed ingredients', quantity: 200, unit: 'g' }],
+            instructions: ['Prepare and cook'],
+            cookingTime: 20
+          },
+          alternatives: []
+        }]
       });
     }
 
     return { days };
   }
 
-  // Helper: Format final meal plan
+  // Helper: Format final meal plan - FIXED
   async formatMealPlan(detailedMeals, planRequest, metadata) {
-    const startDate = new Date(planRequest.startDate);
-    const endDate = new Date(planRequest.startDate);
+    // Fix: Ensure valid dates with proper fallback
+    let startDate;
     
-    if (planRequest.duration === 'weekly') {
+    // Handle various input formats for startDate
+    if (planRequest.startDate instanceof Date && !isNaN(planRequest.startDate.getTime())) {
+      startDate = planRequest.startDate;
+    } else if (typeof planRequest.startDate === 'string') {
+      startDate = new Date(planRequest.startDate);
+      if (isNaN(startDate.getTime())) {
+        console.log('Invalid string date, using current date');
+        startDate = new Date();
+      }
+    } else {
+      console.log('No valid start date provided, using current date');
+      startDate = new Date();
+    }
+    
+    // Create endDate based on valid startDate
+    const endDate = new Date(startDate.getTime()); // Clone the date
+    
+    // Set duration - handle both 'weekly' and 'daily' types
+    const duration = planRequest.duration || planRequest.type || 'daily';
+    if (duration === 'weekly') {
       endDate.setDate(endDate.getDate() + 6);
     }
 
-    const dailyPlans = detailedMeals.days.map((day, index) => {
-      const currentDate = new Date(startDate);
-      currentDate.setDate(currentDate.getDate() + index);
+    // Create daily plans with valid dates
+    const dailyPlans = [];
+    
+    if (detailedMeals && detailedMeals.days) {
+      detailedMeals.days.forEach((day, index) => {
+        const currentDate = new Date(startDate.getTime());
+        currentDate.setDate(currentDate.getDate() + index);
+        
+        // Ensure date is valid
+        if (isNaN(currentDate.getTime())) {
+          console.error('Invalid date for day', index);
+          currentDate = new Date();
+          currentDate.setDate(currentDate.getDate() + index);
+        }
 
-      return {
-        date: currentDate,
-        meals: day.meals.map((meal, mealIndex) => ({
-          type: meal.type,
-          name: meal.name,
-          nutrition: meal.nutrition,
-          servings: 1,
-          alternatives: meal.alternatives || [],
-          order: mealIndex,
-          isLocked: false,
-          isCustom: false,
-          customRecipe: meal.customRecipe || null
-        })),
-        notes: day.notes || ''
-      };
-    });
+        dailyPlans.push({
+          date: currentDate,
+          meals: (day.meals || []).map((meal, mealIndex) => ({
+            type: meal.type || 'lunch',
+            name: meal.name || 'Unnamed Meal',
+            nutrition: meal.nutrition || {
+              calories: 400,
+              protein: 20,
+              carbs: 50,
+              fat: 15,
+              fiber: 5,
+              sodium: 300,
+              sugar: 10
+            },
+            servings: meal.servings || 1,
+            alternatives: meal.alternatives || [],
+            order: mealIndex,
+            isLocked: false,
+            isCustom: meal.isCustom || false,
+            customRecipe: meal.customRecipe || null
+          })),
+          notes: day.notes || '',
+          totals: day.totals || {
+            calories: 0,
+            protein: 0,
+            carbs: 0,
+            fat: 0,
+            fiber: 0,
+            sodium: 0,
+            sugar: 0
+          }
+        });
+      });
+    }
+
+    // Ensure we have at least one daily plan
+    if (dailyPlans.length === 0) {
+      const defaultDate = new Date();
+      dailyPlans.push({
+        date: defaultDate,
+        meals: [],
+        notes: 'No meals generated',
+        totals: {
+          calories: 0,
+          protein: 0,
+          carbs: 0,
+          fat: 0,
+          fiber: 0,
+          sodium: 0,
+          sugar: 0
+        }
+      });
+    }
 
     return {
       userId: planRequest.userId,
-      type: planRequest.duration,
-      startDate,
-      endDate,
-      dailyPlans,
-      generationMetadata: metadata,
+      type: duration,
+      name: `Meal Plan - ${startDate.toISOString().split('T')[0]}`,
+      startDate: startDate,
+      endDate: endDate,
+      dailyPlans: dailyPlans,
+      generationMetadata: metadata || {
+        method: 'fallback',
+        generatedAt: new Date()
+      },
       status: 'active'
     };
   }
 
-  // Fallback plan generation (when AI fails or not available)
+  // Fallback plan generation - COMPLETELY FIXED
   async generateFallbackPlan(userId, planRequest) {
-    const preferences = await UserPreferences.findOne({ userId });
-    const healthProfile = await HealthProfile.findOne({ userId });
-    
-    // Get default strategy
-    const strategy = this.getDefaultStrategy(healthProfile, preferences);
-    
-    // Get default structure
-    const structure = this.getDefaultMealStructure(strategy);
-    
-    // Generate basic meals with ingredients
-    const detailedMeals = this.generateBasicMeals(structure, preferences, planRequest);
-    
-    // Format the plan
-    return this.formatMealPlan(
-      detailedMeals,
-      planRequest,
-      {
-        method: 'fallback',
-        preferences: preferences?.toObject(),
-        healthProfile: healthProfile?.toObject()
+    try {
+      const preferences = await UserPreferences.findOne({ userId });
+      const healthProfile = await HealthProfile.findOne({ userId });
+      
+      // Fix: Ensure planRequest has all required fields
+      if (!planRequest) {
+        planRequest = {};
       }
-    );
+      
+      // Ensure userId is set
+      planRequest.userId = userId;
+      
+      // Fix duration/type field
+      if (!planRequest.duration && !planRequest.type) {
+        planRequest.duration = 'daily';
+      } else if (planRequest.type && !planRequest.duration) {
+        planRequest.duration = planRequest.type;
+      }
+      
+      // Fix: Ensure valid startDate
+      let startDate;
+      if (planRequest.startDate instanceof Date && !isNaN(planRequest.startDate.getTime())) {
+        startDate = planRequest.startDate;
+      } else if (typeof planRequest.startDate === 'string') {
+        startDate = new Date(planRequest.startDate);
+        if (isNaN(startDate.getTime())) {
+          startDate = new Date();
+        }
+      } else {
+        startDate = new Date();
+      }
+      planRequest.startDate = startDate;
+      
+      console.log('Generating fallback plan with:', {
+        userId,
+        startDate: startDate.toISOString(),
+        duration: planRequest.duration
+      });
+      
+      // Get default strategy
+      const strategy = this.getDefaultStrategy(healthProfile, preferences);
+      
+      // Get default structure
+      const structure = this.getDefaultMealStructure(strategy);
+      
+      // Generate basic meals with ingredients
+      const detailedMeals = this.generateBasicMeals(structure, preferences, planRequest);
+      
+      // Format the plan with proper error handling
+      const formattedPlan = await this.formatMealPlan(
+        detailedMeals,
+        planRequest,
+        {
+          method: 'fallback',
+          preferences: preferences?.toObject ? preferences.toObject() : {},
+          healthProfile: healthProfile?.toObject ? healthProfile.toObject() : {},
+          generatedAt: new Date()
+        }
+      );
+      
+      // Final validation before returning
+      if (!formattedPlan.type) {
+        formattedPlan.type = planRequest.duration || 'daily';
+      }
+      
+      if (!formattedPlan.startDate || isNaN(new Date(formattedPlan.startDate).getTime())) {
+        formattedPlan.startDate = new Date();
+      }
+      
+      if (!formattedPlan.endDate || isNaN(new Date(formattedPlan.endDate).getTime())) {
+        formattedPlan.endDate = new Date(formattedPlan.startDate);
+        if (formattedPlan.type === 'weekly') {
+          formattedPlan.endDate.setDate(formattedPlan.endDate.getDate() + 6);
+        }
+      }
+      
+      return formattedPlan;
+    } catch (error) {
+      console.error('Error in generateFallbackPlan:', error);
+      
+      // Ultimate fallback - return minimal valid plan
+      const now = new Date();
+      const endDate = new Date(now);
+      if (planRequest?.duration === 'weekly' || planRequest?.type === 'weekly') {
+        endDate.setDate(endDate.getDate() + 6);
+      }
+      
+      return {
+        userId: userId,
+        type: planRequest?.duration || planRequest?.type || 'daily',
+        name: `Meal Plan - ${now.toISOString().split('T')[0]}`,
+        startDate: now,
+        endDate: endDate,
+        dailyPlans: [{
+          date: now,
+          meals: [{
+            type: 'breakfast',
+            name: 'Default Breakfast',
+            nutrition: {
+              calories: 350,
+              protein: 15,
+              carbs: 50,
+              fat: 10,
+              fiber: 5,
+              sodium: 200,
+              sugar: 10
+            },
+            servings: 1,
+            alternatives: [],
+            order: 0,
+            isLocked: false,
+            isCustom: false,
+            customRecipe: null
+          }],
+          notes: 'Default meal plan',
+          totals: {
+            calories: 350,
+            protein: 15,
+            carbs: 50,
+            fat: 10,
+            fiber: 5,
+            sodium: 200,
+            sugar: 10
+          }
+        }],
+        generationMetadata: {
+          method: 'ultimate-fallback',
+          error: 'Failed to generate proper meal plan',
+          generatedAt: now
+        },
+        status: 'active'
+      };
+    }
   }
 
   // Helper: Format few-shot examples
@@ -510,6 +844,37 @@ class MealPlanningService {
         `Example ${i + 1}:\nInput: ${JSON.stringify(ex.input)}\nOutput: ${JSON.stringify(ex.output)}`
       ).join('\n\n')
     }\n`;
+  }
+
+  // Helper: Get default meal
+  getDefaultMeal(mealType, targetCalories) {
+    return {
+      type: mealType,
+      name: `${mealType.charAt(0).toUpperCase() + mealType.slice(1)} Meal`,
+      nutrition: {
+        calories: targetCalories || 400,
+        protein: Math.round(targetCalories * 0.25 / 4),
+        carbs: Math.round(targetCalories * 0.45 / 4),
+        fat: Math.round(targetCalories * 0.30 / 9),
+        fiber: 5,
+        sodium: 300,
+        sugar: 10
+      },
+      ingredients: [
+        { name: 'Main protein', quantity: 150, unit: 'g' },
+        { name: 'Vegetables', quantity: 200, unit: 'g' },
+        { name: 'Whole grain', quantity: 100, unit: 'g' }
+      ],
+      instructions: [
+        'Prepare all ingredients',
+        'Cook protein source',
+        'Prepare vegetables',
+        'Cook grains if needed',
+        'Combine and season to taste'
+      ],
+      cookingTime: 25,
+      alternatives: []
+    };
   }
 
   // Helper: Get relevant recipes from database
@@ -525,6 +890,81 @@ class MealPlanningService {
       .select('title nutrition cookingTime cuisine dietaryInfo');
 
     return recipes;
+  }
+
+  // Generate single meal (for regeneration)
+  async generateSingleMeal(preferences, mealType, requirements = {}) {
+    const mealTemplates = {
+      breakfast: [
+        { 
+          name: 'Power Breakfast Bowl', 
+          calories: 400, protein: 18, carbs: 50, fat: 12,
+          ingredients: [
+            { name: 'Eggs', quantity: 2, unit: 'unit' },
+            { name: 'Avocado', quantity: 50, unit: 'g' },
+            { name: 'Whole grain toast', quantity: 2, unit: 'slice' },
+            { name: 'Spinach', quantity: 50, unit: 'g' }
+          ]
+        }
+      ],
+      lunch: [
+        { 
+          name: 'Protein Power Lunch', 
+          calories: 500, protein: 35, carbs: 45, fat: 18,
+          ingredients: [
+            { name: 'Grilled chicken', quantity: 150, unit: 'g' },
+            { name: 'Brown rice', quantity: 100, unit: 'g' },
+            { name: 'Mixed vegetables', quantity: 150, unit: 'g' }
+          ]
+        }
+      ],
+      dinner: [
+        { 
+          name: 'Balanced Dinner', 
+          calories: 550, protein: 32, carbs: 55, fat: 20,
+          ingredients: [
+            { name: 'Lean beef', quantity: 150, unit: 'g' },
+            { name: 'Sweet potato', quantity: 200, unit: 'g' },
+            { name: 'Green beans', quantity: 150, unit: 'g' }
+          ]
+        }
+      ],
+      snack: [
+        { 
+          name: 'Protein Snack', 
+          calories: 180, protein: 10, carbs: 15, fat: 8,
+          ingredients: [
+            { name: 'Protein bar', quantity: 1, unit: 'unit' }
+          ]
+        }
+      ]
+    };
+
+    const templates = mealTemplates[mealType] || mealTemplates.lunch;
+    const template = templates[Math.floor(Math.random() * templates.length)];
+
+    return {
+      type: mealType,
+      name: template.name,
+      nutrition: {
+        calories: template.calories,
+        protein: template.protein,
+        carbs: template.carbs,
+        fat: template.fat,
+        fiber: 5,
+        sodium: 300,
+        sugar: 10
+      },
+      customRecipe: {
+        name: template.name,
+        ingredients: template.ingredients,
+        instructions: ['Prepare and cook as directed'],
+        cookingTime: 20
+      },
+      alternatives: [],
+      isCustom: false,
+      servings: 1
+    };
   }
 }
 
