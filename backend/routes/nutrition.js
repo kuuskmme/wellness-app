@@ -11,6 +11,7 @@ const ragService = require('../utils/ragService');
 const nutritionCalculator = require('../utils/nutritionCalculator');
 const shoppingListService = require('../utils/shoppingListService');
 const nutritionAnalysisService = require('../utils/nutritionAnalysisService');
+const HealthProfile = require('../models/HealthProfile');
 
 // =====================
 // USER PREFERENCES
@@ -55,26 +56,190 @@ router.get('/preferences', auth, async (req, res) => {
 // Update user preferences
 router.put('/preferences', auth, async (req, res) => {
   try {
+    // Get user's health profile
+    const healthProfile = await HealthProfile.findOne({ userId: req.userId });
+    
+    if (!healthProfile) {
+      return res.status(404).json({ 
+        message: 'Health profile not found. Please create your health profile first.' 
+      });
+    }
+    
+    // Get or create preferences
     let preferences = await UserPreferences.findOne({ userId: req.userId });
     
     if (!preferences) {
-      preferences = new UserPreferences({
+      preferences = new UserPreferences({ 
         userId: req.userId,
-        ...req.body
+        dietaryPreferences: [],
+        allergies: [],
+        dislikedIngredients: [],
+        cuisinePreferences: [],
+        timezone: 'UTC'
       });
-    } else {
-      Object.assign(preferences, req.body);
     }
     
+    // Store imported health data
+    preferences.healthProfileLink = {
+      linkedProfileId: healthProfile._id,
+      syncEnabled: true,
+      lastSynced: new Date(),
+      importedData: {
+        weight: healthProfile.physicalMetrics?.weight?.normalizedValue || null,
+        height: healthProfile.physicalMetrics?.height?.normalizedValue || null,
+        bmi: healthProfile.physicalMetrics?.bmi?.value || null,
+        activityLevel: healthProfile.lifestyleIndicators?.activityLevel || 'sedentary',
+        fitnessGoal: healthProfile.fitnessGoals?.primary || 'maintain_weight',
+        targetWeight: healthProfile.fitnessGoals?.targetWeight?.normalizedValue || null
+      }
+    };
+    
+    // Calculate BMR using Mifflin-St Jeor Equation
+    const weight = preferences.healthProfileLink.importedData.weight || 70; // kg
+    const height = preferences.healthProfileLink.importedData.height || 170; // cm
+    const age = healthProfile.demographics?.age || 30;
+    const gender = healthProfile.demographics?.gender || 'prefer_not_to_say';
+    
+    let bmr;
+    if (gender === 'male') {
+      bmr = 10 * weight + 6.25 * height - 5 * age + 5;
+    } else if (gender === 'female') {
+      bmr = 10 * weight + 6.25 * height - 5 * age - 161;
+    } else {
+      // Use average of male and female calculations
+      const maleBMR = 10 * weight + 6.25 * height - 5 * age + 5;
+      const femaleBMR = 10 * weight + 6.25 * height - 5 * age - 161;
+      bmr = (maleBMR + femaleBMR) / 2;
+    }
+    
+    // Apply activity level multiplier
+    const activityMultipliers = {
+      'sedentary': 1.2,
+      'lightly_active': 1.375,
+      'moderately_active': 1.55,
+      'very_active': 1.725,
+      'extremely_active': 1.9
+    };
+    
+    const activityLevel = preferences.healthProfileLink.importedData.activityLevel;
+    const multiplier = activityMultipliers[activityLevel] || 1.2;
+    let targetCalories = Math.round(bmr * multiplier);
+    
+    // Adjust for fitness goals
+    const fitnessGoal = preferences.healthProfileLink.importedData.fitnessGoal;
+    if (fitnessGoal === 'weight_loss') {
+      targetCalories -= 500; // 500 calorie deficit for ~1 lb/week loss
+    } else if (fitnessGoal === 'muscle_gain') {
+      targetCalories += 300; // 300 calorie surplus for lean gains
+    }
+    
+    // Ensure calories are within reasonable bounds
+    targetCalories = Math.max(1200, Math.min(4000, targetCalories));
+    
+    // Update nutritional targets
+    preferences.nutritionalTargets = {
+      dailyCalories: targetCalories,
+      macros: {
+        // Adjust macros based on fitness goal
+        protein: {
+          grams: Math.round(fitnessGoal === 'muscle_gain' ? 
+            weight * 2.2 : // 1g per lb for muscle gain
+            weight * 1.6), // 0.8g per lb for maintenance/loss
+          percentage: fitnessGoal === 'muscle_gain' ? 30 : 25
+        },
+        carbs: {
+          grams: Math.round(targetCalories * 0.45 / 4), // 45% from carbs
+          percentage: 45
+        },
+        fat: {
+          grams: Math.round(targetCalories * 0.30 / 9), // 30% from fat
+          percentage: fitnessGoal === 'muscle_gain' ? 25 : 30
+        }
+      }
+    };
+    
+    // Import dietary preferences from health profile
+    if (healthProfile.dietaryPreferences && healthProfile.dietaryPreferences.length > 0) {
+      preferences.dietaryPreferences = [...new Set([
+        ...preferences.dietaryPreferences,
+        ...healthProfile.dietaryPreferences
+      ])];
+    }
+    
+    // Import allergies from health profile
+    if (healthProfile.dietaryRestrictions?.allergies && 
+        healthProfile.dietaryRestrictions.allergies.length > 0) {
+      preferences.allergies = [...new Set([
+        ...preferences.allergies,
+        ...healthProfile.dietaryRestrictions.allergies
+      ])];
+    }
+    
+    // Save updated preferences
     await preferences.save();
     
-    res.json({
-      message: 'Preferences updated successfully',
-      preferences
-    });
+    // Update wellness score with nutrition component
+    if (healthProfile.wellnessScore) {
+      // Calculate nutrition score based on profile completeness
+      const nutritionScore = calculateNutritionScore(preferences);
+      
+      // Update wellness score components
+      if (!healthProfile.wellnessScore.components) {
+        healthProfile.wellnessScore.components = {};
+      }
+      healthProfile.wellnessScore.components.nutrition = nutritionScore;
+      
+      // Recalculate overall wellness score
+      const components = healthProfile.wellnessScore.components;
+      const validComponents = Object.values(components).filter(score => score !== undefined);
+      const totalScore = validComponents.reduce((sum, score) => sum + score, 0);
+      healthProfile.wellnessScore.overall = Math.round(totalScore / validComponents.length);
+      healthProfile.wellnessScore.lastCalculated = new Date();
+      
+      await healthProfile.save();
+    }
+    
+    // Prepare response with sync details
+    const syncSummary = {
+      message: 'Successfully synced with health profile',
+      preferences,
+      syncDetails: {
+        calculatedCalories: targetCalories,
+        calculatedMacros: {
+          protein: preferences.nutritionalTargets.macros.protein.grams + 'g',
+          carbs: preferences.nutritionalTargets.macros.carbs.grams + 'g',
+          fat: preferences.nutritionalTargets.macros.fat.grams + 'g'
+        },
+        importedFromProfile: {
+          bmi: healthProfile.physicalMetrics?.bmi?.value?.toFixed(1) || 'Not set',
+          weight: weight + ' kg',
+          height: height + ' cm',
+          age: age + ' years',
+          activityLevel: activityLevel.replace('_', ' '),
+          fitnessGoal: fitnessGoal.replace(/_/g, ' '),
+          targetWeight: preferences.healthProfileLink.importedData.targetWeight 
+            ? preferences.healthProfileLink.importedData.targetWeight + ' kg' 
+            : 'Not set'
+        },
+        calorieCalculation: {
+          bmr: Math.round(bmr),
+          activityMultiplier: multiplier,
+          tdee: Math.round(bmr * multiplier),
+          goalAdjustment: fitnessGoal === 'weight_loss' ? '-500' : 
+                          fitnessGoal === 'muscle_gain' ? '+300' : '0',
+          finalTarget: targetCalories
+        }
+      }
+    };
+    
+    res.json(syncSummary);
+    
   } catch (error) {
-    console.error('Update preferences error:', error);
-    res.status(500).json({ message: 'Server error' });
+    console.error('Sync preferences error:', error);
+    res.status(500).json({ 
+      message: 'Server error while syncing preferences',
+      error: error.message 
+    });
   }
 });
 
@@ -984,6 +1149,22 @@ router.post('/init-data', async (req, res) => {
 // =====================
 // HELPER FUNCTIONS
 // =====================
+
+// Helper function to calculate nutrition score
+function calculateNutritionScore(preferences) {
+  let score = 50; // Base score
+  
+  // Add points for completed sections
+  if (preferences.dietaryPreferences?.length > 0) score += 10;
+  if (preferences.allergies?.length > 0) score += 5;
+  if (preferences.cuisinePreferences?.length > 0) score += 5;
+  if (preferences.nutritionalTargets?.dailyCalories !== 2000) score += 10; // Customized
+  if (preferences.mealPreferences?.mealsPerDay) score += 5;
+  if (preferences.cookingPreferences?.skillLevel) score += 5;
+  if (preferences.healthProfileLink?.syncEnabled) score += 10; // Synced with health
+  
+  return Math.min(100, score);
+}
 
 function getMockRecipes() {
   return [
