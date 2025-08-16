@@ -18,9 +18,9 @@ import NutritionPreferencesPage from './pages/NutritionPreferencesPage';
 import MealPlannerPage from './pages/MealPlannerPage';
 import RecipeSearchPage from './pages/RecipeSearchPage';
 import ShoppingListPage from './pages/ShoppingListPage';
-import NutritionAnalysisPage from './pages/NutritionAnalysisPage'; // Import the real page!
+import NutritionAnalysisPage from './pages/NutritionAnalysisPage';
 
-// Navigation component
+// Navigation component with ALL nutrition links
 const Navigation = () => {
   const { user, logout } = useAuth();
 
@@ -49,24 +49,57 @@ const Navigation = () => {
                 >
                   Profile
                 </Link>
-                <Link
-                  to="/nutrition/meal-planner"
-                  className="text-gray-600 hover:text-gray-900 px-3 py-2 rounded-md text-sm font-medium"
-                >
-                  Meal Planner
-                </Link>
-                <Link
-                  to="/nutrition/recipes"
-                  className="text-gray-600 hover:text-gray-900 px-3 py-2 rounded-md text-sm font-medium"
-                >
-                  Recipes
-                </Link>
-                <Link
-                  to="/nutrition/analysis"
-                  className="text-gray-600 hover:text-gray-900 px-3 py-2 rounded-md text-sm font-medium"
-                >
-                  Analysis
-                </Link>
+                
+                {/* Dropdown for Nutrition */}
+                <div className="relative group">
+                  <button className="text-gray-600 hover:text-gray-900 px-3 py-2 rounded-md text-sm font-medium inline-flex items-center">
+                    Nutrition
+                    <svg className="ml-1 h-4 w-4" fill="currentColor" viewBox="0 0 20 20">
+                      <path fillRule="evenodd" d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z" clipRule="evenodd" />
+                    </svg>
+                  </button>
+                  
+                  {/* Dropdown menu */}
+                  <div className="absolute left-0 mt-2 w-48 rounded-md shadow-lg bg-white ring-1 ring-black ring-opacity-5 opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all duration-200 z-50">
+                    <div className="py-1" role="menu">
+                      <Link
+                        to="/nutrition/preferences"
+                        className="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-100"
+                        role="menuitem"
+                      >
+                        🥗 Dietary Preferences
+                      </Link>
+                      <Link
+                        to="/nutrition/meal-planner"
+                        className="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-100"
+                        role="menuitem"
+                      >
+                        📅 Meal Planner
+                      </Link>
+                      <Link
+                        to="/nutrition/recipes"
+                        className="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-100"
+                        role="menuitem"
+                      >
+                        🔍 Recipe Search
+                      </Link>
+                      <Link
+                        to="/nutrition/shopping-list"
+                        className="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-100"
+                        role="menuitem"
+                      >
+                        🛒 Shopping List
+                      </Link>
+                      <Link
+                        to="/nutrition/analysis"
+                        className="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-100"
+                        role="menuitem"
+                      >
+                        📊 Nutrition Analysis
+                      </Link>
+                    </div>
+                  </div>
+                </div>
               </div>
             )}
           </div>
@@ -151,7 +184,7 @@ function App() {
                 }
               />
               
-              {/* Protected Routes - Nutrition */}
+              {/* Protected Routes - Nutrition (USING CORRECT PATHS) */}
               <Route
                 path="/nutrition/preferences"
                 element={
