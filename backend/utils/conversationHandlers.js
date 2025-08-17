@@ -430,109 +430,232 @@ class ConversationHandlers {
    * Interprets: Nutritional balance, variety, preferences
    */
   static async handleMealPlans(userId, query, context) {
-    try {
-      // Determine timeframe from query
-      const isWeekly = query.toLowerCase().includes('week');
-      const timeframe = isWeekly ? 'week' : 'today';
-      
-      const mealPlanResult = await executeFunction('get_nutrition_data', userId, {
-        type: 'meal_plan',
-        timeframe: timeframe
-      });
-      
-      if (!mealPlanResult.data) {
-        return {
-          response: "I don't see an active meal plan yet. Would you like me to help you create one? Just go to the Meal Planner page to get started!",
-          functionCalls: []
-        };
-      }
-      
-      const data = mealPlanResult.data;
-      console.log('Handler received data:', JSON.stringify(data, null, 2));
-      const userName = context.userProfile?.name || 'there';
-      let response = `${userName}, here's your ${timeframe === 'week' ? 'weekly' : "today's"} meal plan:\n\n`;
-      
-      if (timeframe === 'today') {
-        // Today's meal plan
-        const today = data?.data?.meals || data?.meals || [];
-console.log('Today meals array:', today);  // ADD THIS
-        
-        response += `**🍽️ Today's Meals:**\n\n`;
-        
-        if (today.length > 0) {
-          today.forEach(meal => {
-            response += `**${meal.type || meal.mealType}** (${meal.calories || 0} kcal)\n`;
-            response += `• ${meal.name}\n`;
-            
-            if (meal.ingredients && meal.ingredients.length > 0) {
-              response += `  *Ingredients:* ${meal.ingredients.slice(0, 3).join(', ')}`;
-              if (meal.ingredients.length > 3) response += '...';
-              response += '\n';
-            }
-            
-            if (meal.macros) {
-              response += `  *Macros:* ${meal.macros.protein}g protein, ${meal.macros.carbs}g carbs, ${meal.macros.fat}g fat\n`;
-            }
-            response += '\n';
-          });
-          
-          // Nutritional summary for the day
-          if (data.nutritionSummary) {
-            const summary = data.nutritionSummary;
-            response += `**📊 Daily Nutrition:**\n`;
-            response += `• Total Calories: ${summary.calories} kcal\n`;
-            response += `• Protein: ${summary.protein}g\n`;
-            response += `• Carbs: ${summary.carbs}g\n`;
-            response += `• Fat: ${summary.fat}g\n`;
-            response += `• Fiber: ${summary.fiber}g\n`;
-          }
-        } else {
-          response += `No meals planned for today yet. Would you like me to suggest some options?`;
-        }
-      } else {
-        // Weekly meal plan
-        response += `**📅 Weekly Meal Plan:**\n\n`;
-        
-        if (Array.isArray(data)) {
-          data.forEach(day => {
-            response += `**${day.day}:**\n`;
-            
-            if (day.meals && day.meals.length > 0) {
-              day.meals.forEach(meal => {
-                response += `• ${meal.type}: ${meal.name} (${meal.calories} kcal)\n`;
-              });
-            }
-            response += '\n';
-          });
-          
-          // Add variety analysis
-          response += this.analyzeMealVariety(data);
-        }
-      }
-      
-      // Add personalized tips
-      response += `\n**💡 Tips:**\n`;
-      response += `• Remember to drink plenty of water throughout the day\n`;
-      response += `• Prep ingredients in advance for easier cooking\n`;
-      response += `• Feel free to swap similar ingredients based on availability`;
-      
+  try {
+    // Check if asking about preparation/cooking instructions
+    const lowerQuery = query.toLowerCase();
+    const isPrepareQuery = lowerQuery.includes('prepare') || 
+                          lowerQuery.includes('cook') || 
+                          lowerQuery.includes('make') ||
+                          lowerQuery.includes('recipe for');
+    
+    // Determine which meal they're asking about
+    let mealType = null;
+    if (lowerQuery.includes('breakfast')) mealType = 'breakfast';
+    else if (lowerQuery.includes('lunch')) mealType = 'lunch';
+    else if (lowerQuery.includes('dinner') || lowerQuery.includes('tonight')) mealType = 'dinner';
+    else if (lowerQuery.includes('snack')) mealType = 'snack';
+    
+    // Get today's meal plan
+    const mealPlanResult = await executeFunction('get_nutrition_data', userId, {
+      type: 'meal_plan',
+      timeframe: 'today'
+    });
+    
+    if (!mealPlanResult.data || !mealPlanResult.data.data) {
       return {
-        response,
-        functionCalls: [{
-          name: 'get_nutrition_data',
-          parameters: { type: 'meal_plan', timeframe: timeframe },
-          result: mealPlanResult
-        }]
-      };
-      
-    } catch (error) {
-      console.error('Meal plan handler error:', error);
-      return {
-        response: "I'm having trouble accessing your meal plan. Please try again.",
+        response: "You don't have an active meal plan yet. Would you like me to help you create one? I can design a personalized plan based on your dietary preferences and goals.",
         functionCalls: []
       };
     }
+    
+    const todayPlan = mealPlanResult.data.data;
+    const userName = context.userProfile?.name || 'there';
+    
+    // Handle preparation/recipe instructions
+    if (isPrepareQuery && mealType) {
+      const meal = todayPlan.meals?.find(m => 
+        m.type.toLowerCase() === mealType
+      );
+      
+      if (meal && meal.customRecipe && meal.customRecipe.instructions) {
+        let response = `${userName}, here's how to prepare ${meal.name} for ${mealType}:\n\n`;
+        response += `**📍 ${meal.name}**\n\n`;
+        
+        // Add ingredients if available
+        if (meal.customRecipe.ingredients && meal.customRecipe.ingredients.length > 0) {
+          response += `**🛒 Ingredients:**\n`;
+          meal.customRecipe.ingredients.forEach(ing => {
+            // Handle both object and string formats
+            if (typeof ing === 'object' && ing.name) {
+              response += `• ${ing.quantity || ''} ${ing.unit || ''} ${ing.name}`.trim() + '\n';
+            } else if (typeof ing === 'string') {
+              response += `• ${ing}\n`;
+            }
+          });
+          response += '\n';
+        }
+        
+        // Add instructions
+        response += `**👨‍🍳 Instructions:**\n`;
+        if (Array.isArray(meal.customRecipe.instructions)) {
+          meal.customRecipe.instructions.forEach((step, index) => {
+            response += `${index + 1}. ${step}\n`;
+          });
+        } else if (typeof meal.customRecipe.instructions === 'string') {
+          // Handle single string instructions
+          response += `${meal.customRecipe.instructions}\n`;
+        }
+        
+        // Add prep time if available
+        if (meal.prepTime) {
+          response += `\n⏱️ **Prep time:** ${meal.prepTime} minutes\n`;
+        }
+        
+        // Add nutrition info
+        if (meal.nutrition) {
+          response += `\n📊 **Nutrition:** ${meal.nutrition.calories || 0} cal | `;
+          response += `${meal.nutrition.protein || 0}g protein | `;
+          response += `${meal.nutrition.carbs || 0}g carbs | `;
+          response += `${meal.nutrition.fat || 0}g fat\n`;
+        }
+        
+        return {
+          response,
+          functionCalls: [{
+            name: 'get_nutrition_data',
+            parameters: { type: 'meal_plan', timeframe: 'today' },
+            result: mealPlanResult
+          }]
+        };
+      }
+    }
+    
+    // Regular meal plan display (daily or weekly)
+    const isWeekly = lowerQuery.includes('week');
+    const timeframe = isWeekly ? 'week' : 'today';
+    
+    // If weekly requested but we only have today's data, fetch weekly
+    if (isWeekly && !Array.isArray(mealPlanResult.data.data)) {
+      const weeklyResult = await executeFunction('get_nutrition_data', userId, {
+        type: 'meal_plan',
+        timeframe: 'week'
+      });
+      if (weeklyResult.data) {
+        mealPlanResult.data = weeklyResult.data;
+      }
+    }
+    
+    let response = '';
+    const data = mealPlanResult.data;
+    
+    if (timeframe === 'today') {
+      response += `${userName}, here's your meal plan for today:\n\n`;
+      
+      if (todayPlan && todayPlan.meals) {
+        const mealEmojis = {
+          breakfast: '🌅',
+          lunch: '☀️',
+          dinner: '🌙',
+          snack: '🍎'
+        };
+        
+        todayPlan.meals.forEach(meal => {
+          const emoji = mealEmojis[meal.type.toLowerCase()] || '🍽️';
+          response += `**${emoji} ${meal.type}:**\n`;
+          response += `🍴 ${meal.name}\n`;
+          
+          if (meal.description) {
+            response += `${meal.description}\n`;
+          }
+          
+          if (meal.ingredients && meal.ingredients.length > 0) {
+            response += `Ingredients: ${meal.ingredients.slice(0, 5).join(', ')}\n`;
+          }
+          
+          // FIX 1: Use meal.nutrition?.calories instead of meal.calories
+          if (meal.nutrition) {
+            response += `📊 ${meal.nutrition.calories || 0} cal | `;
+            response += `${meal.nutrition.protein || 0}g protein | `;
+            response += `${meal.nutrition.carbs || 0}g carbs | `;
+            response += `${meal.nutrition.fat || 0}g fat\n`;
+          }
+          
+          if (meal.prepTime) {
+            response += `⏱️ Prep time: ${meal.prepTime} minutes\n`;
+          }
+          
+          response += '\n';
+        });
+      }
+      
+      // Daily nutrition summary
+      if (data.nutritionSummary) {
+        response += `**📈 Daily Nutrition Summary:**\n`;
+        response += `• Total Calories: ${data.nutritionSummary.calories}\n`;
+        
+        // FIX 3: Don't add 'g' as it's already in the data
+        response += `• Protein: ${data.nutritionSummary.protein}\n`;
+        response += `• Carbs: ${data.nutritionSummary.carbs}\n`;
+        response += `• Fat: ${data.nutritionSummary.fat}\n`;
+        
+        // Compare to targets if available
+        const prefsResult = await executeFunction('get_nutrition_data', userId, {
+          type: 'preferences'
+        });
+        
+        if (prefsResult.data && prefsResult.data.data) {
+          const target = prefsResult.data.data.calorieTarget || 2000;
+          const diff = data.nutritionSummary.calories - target;
+          
+          if (Math.abs(diff) < 100) {
+            response += `\n✅ Perfect! Right on track with your ${target} calorie target!\n`;
+          } else if (diff > 0) {
+            response += `\n⚠️ ${diff} calories over your ${target} target. Consider lighter portions.\n`;
+          } else {
+            response += `\n📝 ${Math.abs(diff)} calories under your ${target} target. You could add a healthy snack.\n`;
+          }
+        }
+      }
+      
+    } else {
+      // Weekly view
+      response += `${userName}, here's your meal plan for this week:\n\n`;
+      
+      const days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
+      const plans = Array.isArray(data.data) ? data.data : [data.data];
+      
+      plans.forEach((dayPlan, index) => {
+        if (dayPlan && index < days.length) {
+          response += `**📅 ${days[index]}:**\n`;
+          
+          dayPlan.meals?.forEach(meal => {
+            response += `• ${meal.type}: ${meal.name}`;
+            // FIX 1: Use meal.nutrition?.calories instead of meal.calories
+            if (meal.nutrition?.calories) {
+              response += ` (${meal.nutrition.calories} cal)`;
+            }
+            response += '\n';
+          });
+          response += '\n';
+        }
+      });
+      
+      // Add variety analysis
+      response += this.analyzeMealVariety(data.data);
+    }
+    
+    // Add helpful tip about preparation
+    if (!isPrepareQuery) {
+      response += `\n💡 **Tip:** Ask me "How do I prepare [meal name]?" for detailed cooking instructions!`;
+    }
+    
+    return {
+      response,
+      functionCalls: [{
+        name: 'get_nutrition_data',
+        parameters: { type: 'meal_plan', timeframe },
+        result: mealPlanResult
+      }]
+    };
+    
+  } catch (error) {
+    console.error('Meal plan handler error:', error);
+    return {
+      response: "I'm having trouble accessing your meal plan. Please try again.",
+      functionCalls: []
+    };
   }
+}
 
   /**
    * 4. RECIPE HANDLER
