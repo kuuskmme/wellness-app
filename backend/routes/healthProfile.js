@@ -114,6 +114,128 @@ router.get('/', async (req, res) => {
   }
 });
 
+router.put('/', verifyToken, async (req, res) => {
+  try {
+    let profile = await HealthProfile.findOne({ userId: req.userId });
+    
+    if (!profile) {
+      profile = new HealthProfile({
+        userId: req.userId,
+        ...req.body
+      });
+    } else {
+      Object.assign(profile, req.body);
+    }
+    
+    // ALWAYS Calculate BMI
+    if (profile.physicalMetrics?.weight?.value && profile.physicalMetrics?.height?.value) {
+      const heightInMeters = profile.physicalMetrics.height.value / 100;
+      const bmi = profile.physicalMetrics.weight.value / (heightInMeters * heightInMeters);
+      
+      profile.physicalMetrics.bmi = {
+        value: parseFloat(bmi.toFixed(1)),
+        category: bmi < 18.5 ? 'underweight' : 
+                 bmi < 25 ? 'normal' : 
+                 bmi < 30 ? 'overweight' : 'obese',
+        lastCalculated: new Date()
+      };
+    }
+    
+    // ALWAYS Calculate wellness score components
+    let bmiScore = 0;
+    if (profile.physicalMetrics?.bmi?.value) {
+      const bmi = profile.physicalMetrics.bmi.value;
+      if (bmi >= 18.5 && bmi <= 24.9) bmiScore = 25;
+      else if (bmi >= 17 && bmi < 18.5 || bmi >= 25 && bmi <= 27) bmiScore = 18;
+      else if (bmi >= 16 && bmi < 17 || bmi > 27 && bmi <= 30) bmiScore = 12;
+      else bmiScore = 6;
+    }
+    
+    let activityScore = 0;
+    if (profile.lifestyleIndicators?.activityLevel) {
+      const activityMap = {
+        'sedentary': 5,
+        'lightly_active': 10,
+        'moderately_active': 15,
+        'very_active': 20,
+        'extremely_active': 25
+      };
+      activityScore = activityMap[profile.lifestyleIndicators.activityLevel] || 0;
+    }
+    
+    let habitsScore = 0;
+    let habitsCount = 0;
+    let habitsTotal = 0;
+    
+    // Sleep score
+    if (profile.lifestyleIndicators?.sleepHours) {
+      habitsCount++;
+      const sleep = profile.lifestyleIndicators.sleepHours;
+      if (sleep >= 7 && sleep <= 9) habitsTotal += 25;
+      else if (sleep >= 6 && sleep < 7 || sleep > 9 && sleep <= 10) habitsTotal += 18;
+      else if (sleep >= 5 && sleep < 6) habitsTotal += 12;
+      else habitsTotal += 6;
+    }
+    
+    // Stress score (lower is better)
+    if (profile.lifestyleIndicators?.stressLevel) {
+      habitsCount++;
+      const stress = profile.lifestyleIndicators.stressLevel;
+      habitsTotal += Math.max(0, 25 - (stress * 2.5));
+    }
+    
+    // Calculate average habits score
+    if (habitsCount > 0) {
+      habitsScore = Math.round(habitsTotal / habitsCount);
+    }
+    
+    let progressScore = 10; // Base score for having a profile
+    
+    // Bonus for having goals
+    if (profile.fitnessGoals?.primary) progressScore += 5;
+    if (profile.fitnessGoals?.targetWeight) progressScore += 5;
+    if (profile.initialFitnessAssessment?.weeklyActivityFrequency > 0) progressScore += 5;
+    
+    // CRITICAL: Ensure components object exists
+    profile.wellnessScore = {
+      overall: bmiScore + activityScore + habitsScore + progressScore,
+      components: {
+        bmi: bmiScore,
+        activity: activityScore,
+        habits: habitsScore,
+        progress: progressScore
+      },
+      lastCalculated: new Date()
+    };
+    
+    // Save metadata
+    profile.metadata = profile.metadata || {};
+    profile.metadata.lastUpdated = new Date();
+    
+    // Save the profile
+    await profile.save();
+    
+    // Log for debugging
+    console.log('Profile saved with wellness score:', {
+      overall: profile.wellnessScore.overall,
+      components: profile.wellnessScore.components
+    });
+
+    res.json({
+      message: 'Profile updated successfully',
+      profile,
+      wellnessScore: profile.wellnessScore
+    });
+    
+  } catch (error) {
+    console.error('Update profile error:', error);
+    res.status(500).json({ 
+      message: 'Server error while updating profile',
+      error: error.message 
+    });
+  }
+});
+
 // Update specific section of health profile
 router.patch('/:section', requireDataConsent, async (req, res) => {
   try {

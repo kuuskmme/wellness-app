@@ -131,12 +131,15 @@ const functionImplementations = {
       }
       
       if (metric_type === 'weight' || metric_type === 'all') {
-        response.weight = {
-          current: profile.physicalMetrics?.weight?.value || 0,
-          initial: profile.metadata?.initialWeight || profile.physicalMetrics?.weight?.value || 0,
-          target: profile.fitnessGoals?.targetWeight || 0,
-          unit: 'kg'
-        };
+      response.weight = {
+        current: profile.physicalMetrics?.weight?.value || 0,
+        initial: profile.metadata?.initialWeight || profile.physicalMetrics?.weight?.value || 0,
+        // FIXED: Handle targetWeight as object or number
+        target: typeof profile.fitnessGoals?.targetWeight === 'object' 
+          ? profile.fitnessGoals.targetWeight.value 
+          : profile.fitnessGoals?.targetWeight || 0,
+        unit: 'kg'
+      };
         
         // Calculate progress
         if (profile.fitnessGoals?.targetWeight) {
@@ -153,17 +156,21 @@ const functionImplementations = {
       }
       
       if (metric_type === 'wellness_score' || metric_type === 'all') {
-        response.wellnessScore = {
-          overall: profile.wellnessScore?.overall || 0,
-          components: profile.wellnessScore?.components || {
-            bmi: 0,
-            activity: 0,
-            progress: 0,
-            habits: 0
-          },
-          maxScore: 100
-        };
-      }
+      // ADDED: Better handling of wellness score components
+      response.wellnessScore = {
+        overall: profile.wellnessScore?.overall || 0,
+        components: {
+          bmi: profile.wellnessScore?.components?.bmi || 0,
+          activity: profile.wellnessScore?.components?.activity || 0,
+          progress: profile.wellnessScore?.components?.progress || 0,
+          habits: profile.wellnessScore?.components?.habits || 0
+        },
+        maxScore: 100
+      };
+      
+      // ADDED: Log for debugging
+      console.log('Wellness score retrieved:', response.wellnessScore);
+    }
       
       if (metric_type === 'all') {
         response.goals = {
@@ -228,22 +235,32 @@ const functionImplementations = {
       
       switch (type) {
         case 'meal_plan':
-          const mealPlan = await MealPlan.findOne({
-            userId,
-            status: 'active'
-          }).sort({ createdAt: -1 });
+        let mealPlan = await MealPlan.findOne({
+          userId,
+          status: 'active'
+        }).sort({ createdAt: -1 });
+        
+        // ADDED: If no active plan, try to find and activate the most recent one
+        if (!mealPlan) {
+          const recentPlan = await MealPlan.findOne({ userId }).sort({ createdAt: -1 });
           
-          if (!mealPlan) {
+          if (recentPlan) {
+            console.log('No active plan found, activating most recent plan');
+            recentPlan.status = 'active';
+            await recentPlan.save();
+            mealPlan = recentPlan;
+          } else {
             return {
-              error: 'No active meal plan found. Would you like me to help you create one?',
+              error: 'No meal plan found. Would you like me to help you create one?',
               data: null
             };
           }
+        }
           
           // Get relevant day(s) based on timeframe
           if (timeframe === 'today') {
             const today = new Date().getDay();
-            response.data = mealPlan.dailyPlans?.[today] || mealPlan.dailyPlans?.[0];
+            response.data = mealPlan.dailyPlans?.[0];
           } else if (timeframe === 'week') {
             response.data = mealPlan.dailyPlans;
           }

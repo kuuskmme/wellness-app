@@ -15,10 +15,26 @@ class ConversationHandlers {
    */
   static async handleHealthMetrics(userId, query, context) {
     try {
+      const lowerQuery = query.toLowerCase();
+      
+      // Determine what specific metric is being asked about
+      const isWeightChange = lowerQuery.includes('weight') && (
+        lowerQuery.includes('change') || 
+        lowerQuery.includes('this month') || 
+        lowerQuery.includes('lost') ||
+        lowerQuery.includes('gained')
+      );
+      
+      const isWellnessScore = lowerQuery.includes('wellness') && (
+        lowerQuery.includes('score') || 
+        lowerQuery.includes('improve') ||
+        lowerQuery.includes('focus')
+      );
+      
       // Get comprehensive health data
       const metricsResult = await executeFunction('get_health_metrics', userId, {
         metric_type: 'all',
-        time_period: 'monthly'
+        time_period: isWeightChange ? 'monthly' : 'current'
       });
       
       if (!metricsResult.data) {
@@ -32,45 +48,224 @@ class ConversationHandlers {
       const userName = context.userProfile?.name || 'there';
       let response = '';
       
-      // Personalized greeting
-      response += `Hi ${userName}! Let me share your current health metrics:\n\n`;
-      
-      // BMI interpretation
-      if (data.bmi) {
-        response += `**📊 BMI: ${data.bmi.value}** (${data.bmi.category})\n`;
+      // Handle specific weight change queries
+      if (isWeightChange) {
+        response += `Hi ${userName}! Let me check your weight changes this month:\n\n`;
         
-        // Add interpretation
-        if (data.bmi.value < 18.5) {
-          response += `This indicates you're underweight. Consider increasing your caloric intake with nutrient-dense foods.\n`;
-        } else if (data.bmi.value >= 18.5 && data.bmi.value < 25) {
-          response += `Great news! You're in the healthy weight range. Keep maintaining your current lifestyle.\n`;
-        } else if (data.bmi.value >= 25 && data.bmi.value < 30) {
-          response += `You're slightly overweight. Small changes to diet and exercise can help you reach the healthy range.\n`;
+        if (data.trend) {
+          const change = data.trend.change;
+          const startWeight = data.trend.startValue;
+          const currentWeight = data.trend.endValue || data.weight?.current;
+          
+          response += `**📊 Monthly Weight Summary:**\n`;
+          response += `• Start of month: ${startWeight} kg\n`;
+          response += `• Current weight: ${currentWeight} kg\n`;
+          
+          if (change < 0) {
+            response += `• **You've lost ${Math.abs(change).toFixed(1)} kg this month!** 🎉\n\n`;
+            response += `That's excellent progress! A healthy weight loss rate is 0.5-1 kg per week, so you're doing great.`;
+          } else if (change > 0) {
+            response += `• **You've gained ${change.toFixed(1)} kg this month**\n\n`;
+            
+            // Context-aware response based on goals
+            if (data.goals?.primary === 'muscle_gain') {
+              response += `This could be positive if you're building muscle! Make sure you're combining this with strength training.`;
+            } else if (data.goals?.primary === 'weight_loss') {
+              response += `This isn't aligned with your weight loss goal. Let's review your nutrition and exercise routine.`;
+            } else {
+              response += `Weight fluctuation is normal. Focus on how you feel and your overall wellness.`;
+            }
+          } else {
+            response += `• **Your weight has remained stable this month**\n\n`;
+            response += `Maintaining weight shows good consistency! Focus on other health markers too.`;
+          }
         } else {
-          response += `This indicates obesity. I recommend consulting with a healthcare provider for a personalized weight management plan.\n`;
+          response += `I don't have enough historical data to show weight changes. Keep logging your weight regularly for trend analysis!`;
+        }
+        
+        return {
+          response,
+          functionCalls: [{
+            name: 'get_health_metrics',
+            parameters: { metric_type: 'all', time_period: 'monthly' },
+            result: metricsResult
+          }]
+        };
+      }
+      
+      // Handle wellness score improvement queries
+      if (isWellnessScore) {
+        response += `Hi ${userName}! Let's look at your wellness score and how to improve it:\n\n`;
+        
+        if (data.wellnessScore) {
+          response += `**🌟 Current Wellness Score: ${data.wellnessScore.overall}/100**\n\n`;
+          
+          // Check if we have components data
+          if (data.wellnessScore.components && typeof data.wellnessScore.components === 'object') {
+            const components = data.wellnessScore.components;
+            
+            // Convert components to array and filter valid values
+            const componentArray = Object.entries(components)
+              .filter(([key, value]) => value !== undefined && value !== null && !isNaN(value))
+              .map(([key, value]) => ({ 
+                name: key.charAt(0).toUpperCase() + key.slice(1), 
+                score: Number(value) 
+              }));
+            
+            if (componentArray.length > 0) {
+              // Sort by score (lowest first for improvement focus)
+              componentArray.sort((a, b) => a.score - b.score);
+              
+              response += `**📊 Component Breakdown:**\n`;
+              componentArray.forEach(comp => {
+                const emoji = comp.score >= 20 ? '✅' : comp.score >= 15 ? '⚠️' : '❌';
+                response += `${emoji} ${comp.name}: ${comp.score}/25\n`;
+              });
+              
+              response += `\n**🎯 Focus Areas for Improvement:**\n\n`;
+              
+              // Get the lowest scoring components for focused recommendations
+              const improvementAreas = componentArray.filter(c => c.score < 20);
+              
+              if (improvementAreas.length > 0) {
+                improvementAreas.slice(0, 3).forEach((area, index) => {
+                  response += `**${index + 1}. ${area.name} (${area.score}/25)**\n`;
+                  
+                  switch(area.name.toLowerCase()) {
+                    case 'bmi':
+                      response += `   • Work towards a healthy BMI range (18.5-24.9)\n`;
+                      response += `   • Aim for gradual weight changes (0.5-1 kg/week)\n`;
+                      response += `   • Track your calories and maintain portion control\n`;
+                      break;
+                    case 'activity':
+                      response += `   • Increase to 150 minutes of moderate exercise weekly\n`;
+                      response += `   • Start with 20-minute daily walks\n`;
+                      response += `   • Add strength training 2x per week\n`;
+                      break;
+                    case 'progress':
+                      response += `   • Set realistic, measurable goals\n`;
+                      response += `   • Track your metrics weekly\n`;
+                      response += `   • Celebrate small victories along the way\n`;
+                      break;
+                    case 'habits':
+                      response += `   • Prioritize 7-9 hours of quality sleep\n`;
+                      response += `   • Manage stress with meditation or yoga\n`;
+                      response += `   • Stay hydrated with 8+ glasses of water daily\n`;
+                      break;
+                    case 'nutrition':
+                      response += `   • Balance your macronutrients (protein, carbs, fats)\n`;
+                      response += `   • Eat 5+ servings of fruits and vegetables daily\n`;
+                      response += `   • Limit processed foods and added sugars\n`;
+                      break;
+                    case 'sleep':
+                      response += `   • Maintain consistent sleep/wake times\n`;
+                      response += `   • Create a relaxing bedtime routine\n`;
+                      response += `   • Keep your bedroom cool and dark\n`;
+                      break;
+                    default:
+                      response += `   • Focus on consistent daily habits\n`;
+                      response += `   • Track your progress regularly\n`;
+                      response += `   • Seek support when needed\n`;
+                  }
+                  response += '\n';
+                });
+                
+                response += `**💡 Quick Win:** Start with your lowest scoring area (${improvementAreas[0].name}) for the biggest impact on your overall wellness!\n\n`;
+                response += `**📈 Potential Impact:** Improving your ${improvementAreas[0].name} score by just 5 points could boost your overall wellness score by ${Math.round(5 / componentArray.length)}+ points!`;
+              } else {
+                // All components are doing well
+                response += `Great job! All your components are scoring well (20+/25). To push your score even higher:\n\n`;
+                response += `• **Consistency is key:** Maintain your current healthy habits\n`;
+                response += `• **Fine-tune:** Small improvements in each area add up\n`;
+                response += `• **Challenge yourself:** Set slightly more ambitious goals\n`;
+                response += `• **Track trends:** Monitor your progress over time\n`;
+              }
+            } else {
+              // No valid components found
+              response += `I'm having trouble loading your wellness score components. Please ensure your health profile is complete.\n\n`;
+              response += `**To improve your wellness score:**\n`;
+              response += `• Complete all sections of your health profile\n`;
+              response += `• Log your activities and meals regularly\n`;
+              response += `• Set clear fitness goals\n`;
+              response += `• Track your progress consistently\n`;
+            }
+          } else {
+            // Components object is missing or invalid
+            response += `**To calculate detailed wellness components:**\n`;
+            response += `• Complete your health profile\n`;
+            response += `• Add your fitness goals\n`;
+            response += `• Log your daily activities\n`;
+            response += `• Track your nutrition\n\n`;
+            response += `Once you have more data logged, I can provide specific improvement recommendations!`;
+          }
+        } else {
+          response += `I don't see a wellness score yet. Complete your health profile to get started!`;
+        }
+        
+        return {
+          response,
+          functionCalls: [{
+            name: 'get_health_metrics',
+            parameters: { metric_type: 'all', time_period: 'current' },
+            result: metricsResult
+          }]
+        };
+      }
+      
+      // Default comprehensive health metrics response
+      response += `Hi ${userName}! Here's your health metrics overview:\n\n`;
+      
+      // BMI section
+      if (data.bmi) {
+        response += `**📏 BMI: ${data.bmi.value}** (${data.bmi.category})\n`;
+        response += `• Normal range: 18.5 - 24.9\n`;
+        
+        if (data.bmi.value < 18.5) {
+          response += `• You're underweight. Consider increasing caloric intake with nutritious foods.\n`;
+        } else if (data.bmi.value >= 25 && data.bmi.value < 30) {
+          response += `• You're slightly overweight. Small lifestyle changes can make a big difference!\n`;
+        } else if (data.bmi.value >= 30) {
+          response += `• Your BMI indicates obesity. Consider consulting a healthcare provider for a personalized plan.\n`;
+        } else {
+          response += `• Great job maintaining a healthy BMI! 🎉\n`;
         }
       }
       
-      // Weight progress interpretation
+      // Weight section
       if (data.weight) {
-        response += `\n**⚖️ Weight Progress:**\n`;
+        response += `\n**⚖️ Weight Status:**\n`;
         response += `• Current: ${data.weight.current} kg\n`;
         
-        if (data.weight.target) {
-          response += `• Target: ${data.weight.target} kg\n`;
-          const toGo = Math.abs(data.weight.current - data.weight.target);
+        if (data.goals?.targetWeight) {
+          const targetValue = typeof data.goals.targetWeight === 'object' 
+            ? data.goals.targetWeight.value 
+            : data.goals.targetWeight;
           
-          if (data.weight.progressPercentage !== undefined) {
-            response += `• Progress: ${data.weight.progressPercentage}% complete\n`;
+          if (targetValue) {
+            response += `• Target: ${targetValue} kg\n`;
             
-            if (data.weight.progressPercentage >= 75) {
-              response += `\n🎉 Amazing! You're almost at your goal - just ${toGo.toFixed(1)} kg to go!\n`;
-            } else if (data.weight.progressPercentage >= 50) {
-              response += `\n💪 Great progress! You're more than halfway to your goal.\n`;
-            } else if (data.weight.progressPercentage >= 25) {
-              response += `\n👍 Good start! Keep up the momentum.\n`;
+            const difference = Math.abs(data.weight.current - targetValue);
+            const toGo = data.weight.current > targetValue ? 'lose' : 'gain';
+            
+            response += `• To go: ${difference.toFixed(1)} kg to ${toGo}\n`;
+            
+            // Progress calculation
+            const initialWeight = data.weight.initial || data.weight.current;
+            const totalToChange = Math.abs(initialWeight - targetValue);
+            const actualChange = Math.abs(initialWeight - data.weight.current);
+            const progressPercent = totalToChange > 0 ? 
+              Math.round((actualChange / totalToChange) * 100) : 0;
+            
+            response += `• Progress: ${progressPercent}% complete\n`;
+            
+            if (progressPercent >= 75) {
+              response += `\n🎉 Amazing! You're almost at your goal!`;
+            } else if (progressPercent >= 50) {
+              response += `\n💪 Great progress! You're more than halfway there.`;
+            } else if (progressPercent >= 25) {
+              response += `\n👍 Good start! Keep up the momentum.`;
             } else {
-              response += `\n🚀 You're on your way! Every step counts.\n`;
+              response += `\n🚀 You're on your way! Every step counts.`;
             }
           }
         }
@@ -78,39 +273,32 @@ class ConversationHandlers {
       
       // Wellness score interpretation
       if (data.wellnessScore) {
-        response += `\n**🌟 Wellness Score: ${data.wellnessScore.overall}/100**\n`;
+        response += `\n\n**🌟 Wellness Score: ${data.wellnessScore.overall}/100**\n`;
         
-        // Identify strongest and weakest components
-        const components = data.wellnessScore.components;
-        const componentArray = Object.entries(components).map(([key, value]) => ({
-          name: key,
-          score: value
-        }));
-        componentArray.sort((a, b) => b.score - a.score);
-        
-        response += `• Strongest area: ${componentArray[0].name} (${componentArray[0].score}/25)\n`;
-        response += `• Area to improve: ${componentArray[componentArray.length - 1].name} (${componentArray[componentArray.length - 1].score}/25)\n`;
+        // Only show component breakdown if we have valid data
+        if (data.wellnessScore.components) {
+          const components = data.wellnessScore.components;
+          const validComponents = Object.entries(components)
+            .filter(([key, value]) => value !== undefined && value !== null)
+            .map(([key, value]) => ({ name: key, score: value }));
+          
+          if (validComponents.length > 0) {
+            validComponents.sort((a, b) => b.score - a.score);
+            
+            response += `• Strongest area: ${validComponents[0].name} (${validComponents[0].score}/25)\n`;
+            if (validComponents.length > 1) {
+              response += `• Area to improve: ${validComponents[validComponents.length - 1].name} (${validComponents[validComponents.length - 1].score}/25)\n`;
+            }
+          }
+        }
         
         // Overall interpretation
         if (data.wellnessScore.overall >= 80) {
-          response += `\n🏆 Excellent wellness score! You're doing fantastic!\n`;
+          response += `\n🏆 Excellent wellness score! You're doing fantastic!`;
         } else if (data.wellnessScore.overall >= 60) {
-          response += `\n✨ Good wellness score! There's room for improvement, but you're on the right track.\n`;
+          response += `\n✨ Good wellness score! There's room for improvement, but you're on the right track.`;
         } else {
-          response += `\n📈 Your wellness score shows opportunity for improvement. Let's work on building healthier habits together!\n`;
-        }
-      }
-      
-      // Trend analysis if available
-      if (data.trend) {
-        response += `\n**📈 30-Day Trend:**\n`;
-        const change = data.trend.change;
-        if (change < 0) {
-          response += `You've lost ${Math.abs(change).toFixed(1)} kg this month - great progress!\n`;
-        } else if (change > 0) {
-          response += `You've gained ${change.toFixed(1)} kg this month.\n`;
-        } else {
-          response += `Your weight has remained stable this month.\n`;
+          response += `\n📈 Your wellness score shows opportunity for improvement. Let's work on building healthier habits together!`;
         }
       }
       
@@ -118,7 +306,7 @@ class ConversationHandlers {
         response,
         functionCalls: [{
           name: 'get_health_metrics',
-          parameters: { metric_type: 'all', time_period: 'monthly' },
+          parameters: { metric_type: 'all', time_period: 'current' },
           result: metricsResult
         }]
       };
@@ -252,115 +440,85 @@ class ConversationHandlers {
         timeframe: timeframe
       });
       
-      if (!mealPlanResult.data || !mealPlanResult.data.data) {
+      if (!mealPlanResult.data) {
         return {
-          response: "You don't have an active meal plan yet. Would you like me to help you create one? I can design a personalized plan based on your dietary preferences and goals.",
+          response: "I don't see an active meal plan yet. Would you like me to help you create one? Just go to the Meal Planner page to get started!",
           functionCalls: []
         };
       }
       
       const data = mealPlanResult.data;
       const userName = context.userProfile?.name || 'there';
-      let response = '';
+      let response = `${userName}, here's your ${timeframe === 'week' ? 'weekly' : "today's"} meal plan:\n\n`;
       
       if (timeframe === 'today') {
-        response += `${userName}, here's your meal plan for today:\n\n`;
+        // Today's meal plan
+        const today = data.meals || data.todayMeals || [];
         
-        const todayPlan = data.data;
-        if (todayPlan && todayPlan.meals) {
-          const mealEmojis = {
-            breakfast: '🌅',
-            lunch: '☀️',
-            dinner: '🌙',
-            snack: '🍎'
-          };
-          
-          todayPlan.meals.forEach(meal => {
-            const emoji = mealEmojis[meal.type.toLowerCase()] || '🍽️';
-            response += `**${emoji} ${meal.type}:**\n`;
-            response += `📍 ${meal.name}\n`;
-            
-            if (meal.description) {
-              response += `${meal.description}\n`;
-            }
+        response += `**🍽️ Today's Meals:**\n\n`;
+        
+        if (today.length > 0) {
+          today.forEach(meal => {
+            response += `**${meal.type || meal.mealType}** (${meal.calories || 0} kcal)\n`;
+            response += `• ${meal.name}\n`;
             
             if (meal.ingredients && meal.ingredients.length > 0) {
-              response += `Ingredients: ${meal.ingredients.slice(0, 5).join(', ')}\n`;
-            }
-            
-            if (meal.nutrition) {
-              response += `📊 ${meal.nutrition.calories} cal | `;
-              response += `${meal.nutrition.protein}g protein | `;
-              response += `${meal.nutrition.carbs}g carbs | `;
-              response += `${meal.nutrition.fat}g fat\n`;
-            }
-            
-            if (meal.prepTime) {
-              response += `⏱️ Prep time: ${meal.prepTime} minutes\n`;
-            }
-            
-            response += '\n';
-          });
-        }
-        
-        // Daily nutrition summary
-        if (data.nutritionSummary) {
-          response += `**📈 Daily Nutrition Summary:**\n`;
-          response += `• Total Calories: ${data.nutritionSummary.calories}\n`;
-          response += `• Protein: ${data.nutritionSummary.protein}\n`;
-          response += `• Carbs: ${data.nutritionSummary.carbs}\n`;
-          response += `• Fat: ${data.nutritionSummary.fat}\n`;
-          
-          // Compare to targets if available
-          const prefsResult = await executeFunction('get_nutrition_data', userId, {
-            type: 'preferences'
-          });
-          
-          if (prefsResult.data && prefsResult.data.data) {
-            const target = prefsResult.data.data.calorieTarget;
-            const diff = data.nutritionSummary.calories - target;
-            
-            if (Math.abs(diff) < 100) {
-              response += `\n✅ Perfect! Right on track with your ${target} calorie target!\n`;
-            } else if (diff > 0) {
-              response += `\n⚠️ ${diff} calories over your ${target} target. Consider lighter portions.\n`;
-            } else {
-              response += `\n📝 ${Math.abs(diff)} calories under your ${target} target. You could add a healthy snack.\n`;
-            }
-          }
-        }
-        
-      } else {
-        // Weekly view
-        response += `${userName}, here's your meal plan for this week:\n\n`;
-        
-        const days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
-        const plans = Array.isArray(data.data) ? data.data : [data.data];
-        
-        plans.forEach((dayPlan, index) => {
-          if (dayPlan && index < days.length) {
-            response += `**📅 ${days[index]}:**\n`;
-            
-            dayPlan.meals?.forEach(meal => {
-              response += `• ${meal.type}: ${meal.name}`;
-              if (meal.nutrition) {
-                response += ` (${meal.nutrition.calories} cal)`;
-              }
+              response += `  *Ingredients:* ${meal.ingredients.slice(0, 3).join(', ')}`;
+              if (meal.ingredients.length > 3) response += '...';
               response += '\n';
-            });
+            }
+            
+            if (meal.macros) {
+              response += `  *Macros:* ${meal.macros.protein}g protein, ${meal.macros.carbs}g carbs, ${meal.macros.fat}g fat\n`;
+            }
             response += '\n';
+          });
+          
+          // Nutritional summary for the day
+          if (data.nutritionSummary) {
+            const summary = data.nutritionSummary;
+            response += `**📊 Daily Nutrition:**\n`;
+            response += `• Total Calories: ${summary.calories} kcal\n`;
+            response += `• Protein: ${summary.protein}g\n`;
+            response += `• Carbs: ${summary.carbs}g\n`;
+            response += `• Fat: ${summary.fat}g\n`;
+            response += `• Fiber: ${summary.fiber}g\n`;
           }
-        });
+        } else {
+          response += `No meals planned for today yet. Would you like me to suggest some options?`;
+        }
+      } else {
+        // Weekly meal plan
+        response += `**📅 Weekly Meal Plan:**\n\n`;
+        
+        if (Array.isArray(data)) {
+          data.forEach(day => {
+            response += `**${day.day}:**\n`;
+            
+            if (day.meals && day.meals.length > 0) {
+              day.meals.forEach(meal => {
+                response += `• ${meal.type}: ${meal.name} (${meal.calories} kcal)\n`;
+              });
+            }
+            response += '\n';
+          });
+          
+          // Add variety analysis
+          response += this.analyzeMealVariety(data);
+        }
       }
       
-      // Add variety analysis
-      response += this.analyzeMealVariety(data.data);
+      // Add personalized tips
+      response += `\n**💡 Tips:**\n`;
+      response += `• Remember to drink plenty of water throughout the day\n`;
+      response += `• Prep ingredients in advance for easier cooking\n`;
+      response += `• Feel free to swap similar ingredients based on availability`;
       
       return {
         response,
         functionCalls: [{
           name: 'get_nutrition_data',
-          parameters: { type: 'meal_plan', timeframe },
+          parameters: { type: 'meal_plan', timeframe: timeframe },
           result: mealPlanResult
         }]
       };
@@ -376,93 +534,80 @@ class ConversationHandlers {
 
   /**
    * 4. RECIPE HANDLER
-   * Handles: Recipe searches, recommendations, nutritional info
-   * Interprets: Suitability for goals, preparation complexity
+   * Handles: Recipe search, recommendations, customization
+   * Interprets: Dietary fit, preparation complexity, nutritional value
    */
   static async handleRecipes(userId, query, context) {
     try {
-      const recipeResult = await executeFunction('get_nutrition_data', userId, {
-        type: 'recipe'
-      });
-      
-      if (!recipeResult.data || !recipeResult.data.data) {
-        return {
-          response: "I'm having trouble finding recipes right now. Please try again later.",
-          functionCalls: []
-        };
-      }
-      
-      const recipes = Array.isArray(recipeResult.data.data) ? 
-        recipeResult.data.data : [recipeResult.data.data];
-      const userName = context.userProfile?.name || 'there';
-      
-      let response = `${userName}, here are some recipe suggestions:\n\n`;
-      
-      // Get user preferences for better recommendations
+      // Get user preferences for context
       const prefsResult = await executeFunction('get_nutrition_data', userId, {
         type: 'preferences'
       });
       
       const preferences = prefsResult.data?.data || {};
       
-      recipes.forEach((recipe, index) => {
-        if (recipe) {
-          response += `**${index + 1}. ${recipe.title}** 🍳\n`;
-          
-          if (recipe.description) {
-            response += `${recipe.description}\n`;
-          }
-          
-          // Check if suitable for user's dietary preferences
-          if (preferences.dietary && preferences.dietary.length > 0) {
-            const suitable = this.checkRecipeSuitability(recipe, preferences);
-            if (suitable.issuitable) {
-              response += `✅ Suitable for your ${preferences.dietary.join(', ')} diet\n`;
-            } else if (suitable.warning) {
-              response += `⚠️ ${suitable.warning}\n`;
-            }
-          }
-          
-          if (recipe.category) {
-            response += `📂 Category: ${recipe.category}\n`;
-          }
-          
-          if (recipe.cookTime) {
-            response += `⏱️ Cook time: ${recipe.cookTime} minutes\n`;
-            
-            // Add complexity interpretation
-            if (recipe.cookTime <= 15) {
-              response += `⚡ Quick & Easy!\n`;
-            } else if (recipe.cookTime <= 30) {
-              response += `👍 Moderate prep time\n`;
-            } else {
-              response += `🍖 Worth the wait!\n`;
-            }
-          }
-          
-          if (recipe.nutrition) {
-            response += `\n📊 **Nutrition per serving:**\n`;
-            response += `• Calories: ${recipe.nutrition.calories}\n`;
-            response += `• Protein: ${recipe.nutrition.protein}g\n`;
-            response += `• Carbs: ${recipe.nutrition.carbs}g\n`;
-            response += `• Fat: ${recipe.nutrition.fat}g\n`;
-            
-            // Goal alignment
-            if (context.userProfile?.goals) {
-              const primaryGoal = context.userProfile.goals[0];
-              if (primaryGoal === 'weight_loss' && recipe.nutrition.calories < 400) {
-                response += `✨ Great for weight loss!\n`;
-              } else if (primaryGoal === 'muscle_gain' && recipe.nutrition.protein > 25) {
-                response += `💪 High protein - perfect for muscle building!\n`;
-              }
-            }
-          }
-          
-          response += '\n';
-        }
+      // Get recipe suggestions
+      const recipeResult = await executeFunction('get_nutrition_data', userId, {
+        type: 'recipe',
+        category: this.extractRecipeCategory(query)
       });
       
-      response += `💡 **Tip:** Choose recipes that align with your goals and dietary preferences. Need something specific? Just ask!`;
+      if (!recipeResult.data || recipeResult.data.length === 0) {
+        return {
+          response: "I couldn't find any recipes matching your criteria. Try searching in the Recipe Search page for more options!",
+          functionCalls: []
+        };
+      }
+      
+      const recipes = Array.isArray(recipeResult.data) ? recipeResult.data : [recipeResult.data];
+      const userName = context.userProfile?.name || 'there';
+      
+      let response = `${userName}, here are some recipe suggestions for you:\n\n`;
+      
+      // Display up to 3 recipes
+      const recipesToShow = recipes.slice(0, 3);
+      
+      recipesToShow.forEach((recipe, index) => {
+        response += `**${index + 1}. ${recipe.name}** ⏱️ ${recipe.prepTime || '30'} mins\n`;
+        
+        // Check dietary compatibility
+        const suitability = this.checkRecipeSuitability(recipe, preferences);
+        if (!suitability.issuitable) {
+          response += `⚠️ *Note: ${suitability.warning}*\n`;
+        }
+        
+        // Nutritional highlights
+        response += `• Calories: ${recipe.calories || 'N/A'} kcal per serving\n`;
+        
+        if (recipe.macros) {
+          response += `• Macros: ${recipe.macros.protein}g protein, ${recipe.macros.carbs}g carbs, ${recipe.macros.fat}g fat\n`;
+        }
+        
+        // Key ingredients
+        if (recipe.ingredients && recipe.ingredients.length > 0) {
+          response += `• Key ingredients: ${recipe.ingredients.slice(0, 5).join(', ')}\n`;
+        }
+        
+        // Dietary tags
+        if (recipe.tags && recipe.tags.length > 0) {
+          response += `• Tags: ${recipe.tags.join(', ')}\n`;
+        }
+        
+        // Quick description
+        if (recipe.description) {
+          response += `• ${recipe.description.substring(0, 100)}...\n`;
+        }
+        
+        response += '\n';
+      });
+      
+      // Personalized recommendation based on preferences
+      if (preferences.dietaryRestrictions && preferences.dietaryRestrictions.length > 0) {
+        response += `**🎯 Filtered for your dietary preferences:**\n`;
+        response += `• ${preferences.dietaryRestrictions.join(', ')}\n\n`;
+      }
+      
+      response += `💡 *Pro tip: You can search for specific recipes or create custom ones in the Recipe Search page!*`;
       
       return {
         response,
@@ -532,74 +677,70 @@ class ConversationHandlers {
       } else if (calorieDiff > 200) {
         response += `⚠️ You're ${calorieDiff} calories over. Consider reducing portion sizes.\n`;
       } else if (calorieDiff < -200) {
-        response += `📝 You're ${Math.abs(calorieDiff)} calories under. Don't forget to fuel your body!\n`;
+        response += `📝 You're ${Math.abs(calorieDiff)} calories under. Make sure you're eating enough!\n`;
       }
       
-      // Macro analysis
+      // Macro breakdown
       response += `\n**🥗 Macronutrient Breakdown:**\n`;
-      const protein = parseInt(nutritionSummary?.protein) || 0;
-      const carbs = parseInt(nutritionSummary?.carbs) || 0;
-      const fat = parseInt(nutritionSummary?.fat) || 0;
       
-      // Calculate percentages
-      const totalMacros = protein * 4 + carbs * 4 + fat * 9;
-      const proteinPercent = Math.round((protein * 4 / totalMacros) * 100);
-      const carbsPercent = Math.round((carbs * 4 / totalMacros) * 100);
-      const fatPercent = Math.round((fat * 9 / totalMacros) * 100);
+      const protein = nutritionSummary?.protein || 0;
+      const carbs = nutritionSummary?.carbs || 0;
+      const fat = nutritionSummary?.fat || 0;
+      const totalMacros = protein + carbs + fat;
       
-      response += `• Protein: ${protein}g (${proteinPercent}%)\n`;
-      response += `• Carbs: ${carbs}g (${carbsPercent}%)\n`;
-      response += `• Fat: ${fat}g (${fatPercent}%)\n`;
-      
-      // Macro targets comparison
-      if (preferences.macroTargets) {
-        response += `\n**📊 vs. Your Targets:**\n`;
-        const targets = preferences.macroTargets;
+      if (totalMacros > 0) {
+        const proteinPercent = Math.round((protein * 4 / calories) * 100) || 0;
+        const carbsPercent = Math.round((carbs * 4 / calories) * 100) || 0;
+        const fatPercent = Math.round((fat * 9 / calories) * 100) || 0;
         
-        if (Math.abs(proteinPercent - targets.proteinPercentage) > 10) {
-          response += `• Protein: ${proteinPercent > targets.proteinPercentage ? 'Higher' : 'Lower'} than target (${targets.proteinPercentage}%)\n`;
+        response += `• Protein: ${protein}g (${proteinPercent}% of calories)\n`;
+        response += `• Carbs: ${carbs}g (${carbsPercent}% of calories)\n`;
+        response += `• Fat: ${fat}g (${fatPercent}% of calories)\n`;
+        
+        // Ideal macro ratios feedback
+        response += `\n**📊 Balance Assessment:**\n`;
+        
+        if (proteinPercent < 15) {
+          response += `• Consider increasing protein intake for muscle maintenance\n`;
+        } else if (proteinPercent > 35) {
+          response += `• Protein intake is quite high - ensure balanced nutrition\n`;
         } else {
-          response += `• Protein: ✓ On target!\n`;
+          response += `• ✅ Protein intake is well-balanced\n`;
         }
         
-        if (Math.abs(carbsPercent - targets.carbsPercentage) > 10) {
-          response += `• Carbs: ${carbsPercent > targets.carbsPercentage ? 'Higher' : 'Lower'} than target (${targets.carbsPercentage}%)\n`;
+        if (carbsPercent < 45) {
+          response += `• Carb intake is low - may affect energy levels\n`;
+        } else if (carbsPercent > 65) {
+          response += `• High carb intake - consider more protein and healthy fats\n`;
         } else {
-          response += `• Carbs: ✓ On target!\n`;
+          response += `• ✅ Carbohydrate intake is appropriate\n`;
         }
         
-        if (Math.abs(fatPercent - targets.fatPercentage) > 10) {
-          response += `• Fat: ${fatPercent > targets.fatPercentage ? 'Higher' : 'Lower'} than target (${targets.fatPercentage}%)\n`;
+        if (fatPercent < 20) {
+          response += `• Fat intake is low - include healthy fats for hormone health\n`;
+        } else if (fatPercent > 35) {
+          response += `• Fat intake is high - monitor saturated fat sources\n`;
         } else {
-          response += `• Fat: ✓ On target!\n`;
+          response += `• ✅ Fat intake is within healthy range\n`;
         }
       }
       
-      // Goal-specific recommendations
-      response += `\n**💡 Personalized Recommendations:**\n`;
-      
-      if (context.userProfile?.goals) {
-        const primaryGoal = context.userProfile.goals[0];
-        
-        if (primaryGoal === 'weight_loss') {
-          if (protein < 0.8 * (context.lastMetrics?.weight || 70)) {
-            response += `• Increase protein to preserve muscle during weight loss\n`;
-          }
-          if (calorieDiff > 0) {
-            response += `• Create a slight calorie deficit for weight loss\n`;
-          }
-        } else if (primaryGoal === 'muscle_gain') {
-          if (protein < 1.6 * (context.lastMetrics?.weight || 70)) {
-            response += `• Increase protein intake for muscle growth (aim for 1.6-2.2g per kg body weight)\n`;
-          }
-          if (calorieDiff < 0) {
-            response += `• Ensure calorie surplus for muscle building\n`;
-          }
+      // Micronutrients if available
+      if (nutritionSummary?.fiber) {
+        response += `\n**🌾 Fiber:** ${nutritionSummary.fiber}g`;
+        if (nutritionSummary.fiber < 25) {
+          response += ` (Consider adding more vegetables and whole grains)`;
+        } else {
+          response += ` (Great fiber intake!)`;
         }
+        response += '\n';
       }
       
-      // Hydration reminder
-      response += `\n💧 Don't forget hydration! Aim for ${Math.round((context.lastMetrics?.weight || 70) * 35)}ml of water today.`;
+      // Personalized recommendations
+      response += `\n**💡 Recommendations:**\n`;
+      response += `1. Stay hydrated - aim for 8 glasses of water daily\n`;
+      response += `2. Include a variety of colorful vegetables\n`;
+      response += `3. Balance each meal with protein, carbs, and healthy fats\n`;
       
       return {
         response,
@@ -620,7 +761,7 @@ class ConversationHandlers {
     } catch (error) {
       console.error('Nutrition analysis handler error:', error);
       return {
-        response: "I'm having trouble analyzing your nutrition right now. Please try again.",
+        response: "I'm having trouble analyzing your nutrition. Please try again.",
         functionCalls: []
       };
     }
@@ -628,115 +769,130 @@ class ConversationHandlers {
 
   /**
    * 6. GENERAL WELLNESS HANDLER
-   * Handles: Exercise, sleep, stress, hydration tips
-   * Interprets: Lifestyle factors, personalized advice
+   * Handles: General health advice, lifestyle tips, wellness questions
+   * Interprets: Holistic health approach, preventive care
    */
   static async handleGeneralWellness(userId, query, context) {
     try {
-      // Determine topic from query
-      let topic = 'general';
-      const lowerQuery = query.toLowerCase();
-      
-      if (lowerQuery.includes('sleep')) topic = 'sleep';
-      else if (lowerQuery.includes('exercise') || lowerQuery.includes('workout')) topic = 'exercise';
-      else if (lowerQuery.includes('stress')) topic = 'stress';
-      else if (lowerQuery.includes('water') || lowerQuery.includes('hydration')) topic = 'hydration';
+      // Extract topic from query
+      const topic = this.extractWellnessTopic(query);
       
       const insightsResult = await executeFunction('get_general_insights', userId, {
         topic: topic
       });
       
-      // Get user's profile for personalization
+      // Get current metrics for context
       const metricsResult = await executeFunction('get_health_metrics', userId, {
         metric_type: 'all',
         time_period: 'current'
       });
       
       const userName = context.userProfile?.name || 'there';
-      const userGoals = context.userProfile?.goals || [];
-      const activityLevel = metricsResult.data?.goals?.activityLevel || 'moderate';
+      const hasProfile = metricsResult.data !== null;
       
-      let response = `${userName}, here's your personalized wellness guidance:\n\n`;
+      let response = `${userName}, `;
       
-      // Topic-specific header with emoji
-      const topicEmojis = {
-        sleep: '😴',
-        exercise: '💪',
-        stress: '🧘',
-        hydration: '💧',
-        general: '🌟'
-      };
-      
-      response += `**${topicEmojis[topic]} ${topic.charAt(0).toUpperCase() + topic.slice(1)} Insights:**\n\n`;
-      
-      // Add personalized context
-      if (topic === 'exercise') {
-        response += `Based on your activity level (${activityLevel}) and goals (${userGoals[0]?.replace(/_/g, ' ') || 'general fitness'}):\n\n`;
-        
-        // Personalized exercise plan
-        if (activityLevel === 'sedentary') {
-          response += `**🚶 Beginner's Plan:**\n`;
-          response += `• Week 1-2: 10-minute walks daily\n`;
-          response += `• Week 3-4: 20-minute walks + 5 min stretching\n`;
-          response += `• Week 5+: Add bodyweight exercises (squats, push-ups)\n\n`;
-        } else if (activityLevel === 'lightly_active') {
-          response += `**🏃 Building Consistency:**\n`;
-          response += `• 3x/week: 30-min cardio (walking, cycling)\n`;
-          response += `• 2x/week: 20-min strength training\n`;
-          response += `• Daily: 10-min morning stretches\n\n`;
-        } else {
-          response += `**🔥 Advanced Training:**\n`;
-          response += `• 4-5x/week: Varied cardio (HIIT, steady-state)\n`;
-          response += `• 3x/week: Strength training (compound movements)\n`;
-          response += `• 1-2x/week: Active recovery (yoga, swimming)\n\n`;
-        }
-      }
-      
-      // Add insights
-      if (insightsResult.data && insightsResult.data.insights) {
-        insightsResult.data.insights.forEach(insight => {
-          response += `• ${insight}\n`;
-        });
-      }
-      
-      // Add personalized tips based on metrics
-      if (metricsResult.data) {
-        response += `\n**📊 Based on Your Profile:**\n`;
-        
-        if (metricsResult.data.wellnessScore) {
-          const score = metricsResult.data.wellnessScore.overall;
-          if (score < 60 && topic === 'general') {
-            response += `• Your wellness score (${score}/100) suggests focusing on building consistent healthy habits\n`;
+      // Topic-specific wellness advice
+      switch(topic) {
+        case 'sleep':
+          response += `here's guidance on improving your sleep:\n\n`;
+          response += `**😴 Sleep Optimization Tips:**\n`;
+          response += `• **Consistency:** Go to bed and wake up at the same time daily\n`;
+          response += `• **Environment:** Keep bedroom cool (60-67°F), dark, and quiet\n`;
+          response += `• **Wind-down routine:** No screens 1 hour before bed\n`;
+          response += `• **Avoid:** Caffeine after 2 PM, large meals 3 hours before bed\n`;
+          response += `• **Try:** Meditation, reading, or gentle stretching before sleep\n`;
+          
+          if (hasProfile && metricsResult.data.lifestyleIndicators?.sleepHours) {
+            const sleepHours = metricsResult.data.lifestyleIndicators.sleepHours;
+            response += `\n**Your Sleep:** ${sleepHours} hours/night\n`;
+            if (sleepHours < 7) {
+              response += `⚠️ You're getting less than the recommended 7-9 hours. Prioritize sleep for better health.\n`;
+            } else if (sleepHours > 9) {
+              response += `You're sleeping more than average. If you still feel tired, consider sleep quality over quantity.\n`;
+            } else {
+              response += `✅ Great! You're within the healthy 7-9 hour range.\n`;
+            }
           }
-        }
-        
-        if (metricsResult.data.bmi && topic === 'exercise') {
-          const bmi = metricsResult.data.bmi.value;
-          if (bmi > 25) {
-            response += `• Focus on low-impact exercises to protect joints while building fitness\n`;
-          } else if (bmi < 18.5) {
-            response += `• Include strength training to build healthy muscle mass\n`;
+          break;
+          
+        case 'stress':
+          response += `let's address stress management:\n\n`;
+          response += `**🧘 Stress Reduction Strategies:**\n`;
+          response += `• **Breathing:** Try 4-7-8 breathing (inhale 4, hold 7, exhale 8)\n`;
+          response += `• **Movement:** Even 10 minutes of walking reduces stress hormones\n`;
+          response += `• **Mindfulness:** 5-minute daily meditation can lower cortisol\n`;
+          response += `• **Social:** Connect with friends/family for emotional support\n`;
+          response += `• **Boundaries:** Learn to say no to overwhelming commitments\n`;
+          
+          if (hasProfile && metricsResult.data.lifestyleIndicators?.stressLevel) {
+            const stress = metricsResult.data.lifestyleIndicators.stressLevel;
+            response += `\n**Your Stress Level:** ${stress}/10\n`;
+            if (stress > 7) {
+              response += `⚠️ High stress detected. Consider professional support if it persists.\n`;
+            } else if (stress > 4) {
+              response += `Moderate stress. Regular relaxation practices can help.\n`;
+            } else {
+              response += `✅ Low stress levels - keep up your current coping strategies!\n`;
+            }
           }
-        }
+          break;
+          
+        case 'hydration':
+          response += `let's talk about proper hydration:\n\n`;
+          response += `**💧 Hydration Guidelines:**\n`;
+          response += `• **Daily target:** 8-10 glasses (2-2.5 liters) of water\n`;
+          response += `• **Timing:** Start with water upon waking\n`;
+          response += `• **Exercise:** Add 500ml for every hour of exercise\n`;
+          response += `• **Signs of dehydration:** Dark urine, headaches, fatigue\n`;
+          response += `• **Pro tip:** Keep a water bottle visible as a reminder\n`;
+          break;
+          
+        case 'exercise':
+          response += `here's your exercise guidance:\n\n`;
+          response += `**🏃 Exercise Recommendations:**\n`;
+          response += `• **Cardio:** 150 min moderate or 75 min vigorous weekly\n`;
+          response += `• **Strength:** 2-3 sessions per week, all major muscle groups\n`;
+          response += `• **Flexibility:** Daily stretching, yoga 2-3x weekly\n`;
+          response += `• **Start small:** 10-minute walks if you're inactive\n`;
+          response += `• **Progress:** Increase duration/intensity by 10% weekly\n`;
+          
+          if (hasProfile && metricsResult.data.activityLevel) {
+            const activity = metricsResult.data.activityLevel;
+            response += `\n**Your Activity Level:** ${activity}\n`;
+            if (activity === 'sedentary') {
+              response += `Start with short walks and gradually build up activity.\n`;
+            } else if (activity === 'lightly_active') {
+              response += `Good foundation! Try adding one more workout weekly.\n`;
+            } else {
+              response += `✅ Keep up the great activity level!\n`;
+            }
+          }
+          break;
+          
+        default:
+          response += `here are general wellness tips:\n\n`;
+          response += `**🌟 Holistic Wellness Approach:**\n`;
+          response += `• **Nutrition:** Eat whole foods, limit processed items\n`;
+          response += `• **Movement:** Find activities you enjoy\n`;
+          response += `• **Sleep:** Prioritize 7-9 hours nightly\n`;
+          response += `• **Stress:** Practice daily relaxation\n`;
+          response += `• **Connection:** Nurture relationships\n`;
+          response += `• **Purpose:** Engage in meaningful activities\n`;
+          response += `• **Prevention:** Regular health check-ups\n`;
       }
       
-      // Action items
-      response += `\n**✅ Action Items:**\n`;
-      
+      // Add actionable next steps
+      response += `\n**📋 Your Action Items:**\n`;
       switch(topic) {
         case 'sleep':
           response += `1. Set a consistent bedtime tonight\n`;
-          response += `2. Create a 30-min wind-down routine\n`;
-          response += `3. Remove screens from bedroom\n`;
-          break;
-        case 'exercise':
-          response += `1. Schedule tomorrow's workout now\n`;
-          response += `2. Prepare workout clothes tonight\n`;
-          response += `3. Start with just 10 minutes if needed\n`;
+          response += `2. Remove electronics from bedroom\n`;
+          response += `3. Try a relaxation app before bed\n`;
           break;
         case 'stress':
-          response += `1. Try 5-minute breathing exercise today\n`;
-          response += `2. Schedule 15-min daily "me time"\n`;
+          response += `1. Take 5 deep breaths right now\n`;
+          response += `2. Schedule 10 minutes of "me time" today\n`;
           response += `3. Practice saying "no" to one commitment\n`;
           break;
         case 'hydration':
@@ -828,6 +984,25 @@ class ConversationHandlers {
     }
     
     return result;
+  }
+  
+  static extractRecipeCategory(query) {
+    const lower = query.toLowerCase();
+    if (lower.includes('breakfast')) return 'breakfast';
+    if (lower.includes('lunch')) return 'lunch';
+    if (lower.includes('dinner')) return 'dinner';
+    if (lower.includes('snack')) return 'snack';
+    if (lower.includes('dessert')) return 'dessert';
+    return 'all';
+  }
+  
+  static extractWellnessTopic(query) {
+    const lower = query.toLowerCase();
+    if (lower.includes('sleep')) return 'sleep';
+    if (lower.includes('stress')) return 'stress';
+    if (lower.includes('water') || lower.includes('hydrat')) return 'hydration';
+    if (lower.includes('exercise') || lower.includes('workout')) return 'exercise';
+    return 'general';
   }
 }
 

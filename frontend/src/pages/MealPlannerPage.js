@@ -69,41 +69,65 @@ const MealPlannerPage = () => {
   };
 
   const fetchActivePlan = async () => {
-    try {
-      const token = localStorage.getItem('token');
+  try {
+    const token = localStorage.getItem('token');
+    
+    // First try to get active plans
+    let response = await fetch('http://localhost:5000/api/nutrition/meal-plan?status=active&limit=1', {
+      headers: {
+        'Authorization': `Bearer ${token}`
+      }
+    });
+    
+    if (response.ok) {
+      const data = await response.json();
       
-      // Get the most recent active meal plan
-      const response = await fetch('http://localhost:5000/api/nutrition/meal-plan?status=active&limit=1', {
-        headers: {
-          'Authorization': `Bearer ${token}`
-        }
-      });
-      
-      if (response.ok) {
-        const data = await response.json();
+      if (data.mealPlans && data.mealPlans.length > 0) {
+        const plan = data.mealPlans[0];
+        setActivePlan(plan);
         
-        if (data.mealPlans && data.mealPlans.length > 0) {
-          const plan = data.mealPlans[0];
-          setActivePlan(plan);
-          
-          // Expand today's meals by default
-          const today = moment().format('YYYY-MM-DD');
-          const todayIndex = plan.dailyPlans?.findIndex(
-            day => moment(day.date).format('YYYY-MM-DD') === today
-          ) || 0;
-          
-          setExpandedDays({ [todayIndex >= 0 ? todayIndex : 0]: true });
-          
-          console.log('Active plan loaded:', plan);
-        } else {
-          console.log('No active meal plans found');
-          setActivePlan(null);
+        // Expand today's meals by default
+        const today = moment().format('YYYY-MM-DD');
+        const todayIndex = plan.dailyPlans?.findIndex(
+          day => moment(day.date).format('YYYY-MM-DD') === today
+        ) || 0;
+        
+        setExpandedDays({ [todayIndex >= 0 ? todayIndex : 0]: true });
+        
+        console.log('Active plan loaded:', plan);
+      } else {
+        // NO ACTIVE PLANS - TRY TO GET ANY PLAN AND ACTIVATE IT
+        console.log('No active plans, fetching most recent...');
+        
+        response = await fetch('http://localhost:5000/api/nutrition/meal-plan?limit=1', {
+          headers: {
+            'Authorization': `Bearer ${token}`
+          }
+        });
+        
+        if (response.ok) {
+          const data = await response.json();
+          if (data.mealPlans && data.mealPlans.length > 0) {
+            const plan = data.mealPlans[0];
+            console.log('Found plan to activate:', plan._id);
+            
+            // Activate it
+            await fetch('http://localhost:5000/api/nutrition/debug/activate-meal-plan', {
+              method: 'POST',
+              headers: { 'Authorization': `Bearer ${token}` }
+            });
+            
+            // Now load it
+            setActivePlan(plan);
+            setExpandedDays({ 0: true });
+          }
         }
       }
-    } catch (error) {
-      console.error('Error fetching active plan:', error);
     }
-  };
+  } catch (error) {
+    console.error('Error fetching active plan:', error);
+  }
+};
 
   const fetchAllPlans = async () => {
     try {

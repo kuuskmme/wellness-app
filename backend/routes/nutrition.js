@@ -278,6 +278,12 @@ router.post('/meal-plan', auth, async (req, res) => {
   try {
     const { type = 'daily', startDate, requirements = {} } = req.body;
     
+    // ADDED: Deactivate all existing active plans for this user
+    await MealPlan.updateMany(
+      { userId: req.userId, status: 'active' },
+      { $set: { status: 'archived' } }
+    );
+    
     let preferences = await UserPreferences.findOne({ userId: req.userId });
     
     if (!preferences) {
@@ -323,6 +329,29 @@ router.post('/meal-plan', auth, async (req, res) => {
     });
     
     let mealPlan;
+    try {
+      mealPlan = await mealPlanningService.generateMealPlan(req.userId, planRequest);
+    } catch (serviceError) {
+      console.error('Service generation failed, using fallback:', serviceError);
+      mealPlan = await mealPlanningService.generateFallbackPlan(req.userId, planRequest);
+    }
+    
+    // ADDED: Ensure meal plan has proper structure
+    mealPlan.status = 'active'; // CRITICAL: Set status to active
+    mealPlan.userId = req.userId;
+    mealPlan.type = type;
+    mealPlan.startDate = planStartDate;
+    mealPlan.endDate = new Date(planStartDate);
+    
+    if (type === 'weekly') {
+      mealPlan.endDate.setDate(mealPlan.endDate.getDate() + 6);
+    }
+    
+    // Save the meal plan
+    const savedPlan = new MealPlan(mealPlan);
+    await savedPlan.save();
+    
+    console.log('Meal plan saved with status:', savedPlan.status); // ADDED for debugging
     
     // Try to use the service, fallback if needed
     try {
@@ -1249,5 +1278,36 @@ function calculateNutritionScore(preferences) {
   
   return factors > 0 ? Math.round(score) : 50;
 }
+
+// Debug endpoint to activate most recent meal plan
+router.post('/debug/activate-meal-plan', auth, async (req, res) => {
+  try {
+    // Deactivate all plans
+    await MealPlan.updateMany(
+      { userId: req.userId },
+      { $set: { status: 'archived' } }
+    );
+    
+    // Find and activate the most recent plan
+    const mostRecent = await MealPlan.findOne({ userId: req.userId })
+      .sort({ createdAt: -1 });
+    
+    if (mostRecent) {
+      mostRecent.status = 'active';
+      await mostRecent.save();
+      
+      res.json({
+        message: 'Activated most recent meal plan',
+        planId: mostRecent._id,
+        planType: mostRecent.type,
+        mealsCount: mostRecent.dailyPlans?.length
+      });
+    } else {
+      res.status(404).json({ message: 'No meal plans found' });
+    }
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
 
 module.exports = router;

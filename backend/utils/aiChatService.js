@@ -209,6 +209,22 @@ class AIChatService {
   detectConversationType(message) {
     const lowerMessage = message.toLowerCase();
     
+    // Check for wellness score improvement queries
+    if ((lowerMessage.includes('wellness') || lowerMessage.includes('score')) && 
+        (lowerMessage.includes('improve') || lowerMessage.includes('focus') || 
+         lowerMessage.includes('increase') || lowerMessage.includes('boost') || 
+         lowerMessage.includes('better'))) {
+      return 'health_metrics'; // Will be handled with wellness improvement logic
+    }
+    
+    // Check for specific weight change queries
+    if ((lowerMessage.includes('weight') || lowerMessage.includes('weigh')) && 
+        (lowerMessage.includes('change') || lowerMessage.includes('month') || 
+         lowerMessage.includes('week') || lowerMessage.includes('lost') || 
+         lowerMessage.includes('gained') || lowerMessage.includes('progress'))) {
+      return 'health_metrics'; // Will be handled with specific weight change logic
+    }
+    
     // Use multiple keywords for better detection
     const patterns = {
       health_metrics: [
