@@ -2,6 +2,7 @@
 const { OpenAI } = require('openai');
 const { functionSchemas, executeFunction } = require('./dataAccessFunctions');
 const ConversationHandlers = require('./conversationHandlers');
+const contextManager = require('./contextManager');
 
 // Initialize OpenAI client if API key exists
 const openai = process.env.OPENAI_API_KEY ? new OpenAI({
@@ -58,6 +59,14 @@ DATA HANDLING:
 - When displaying metrics, show units clearly
 - Validate that data exists before making claims about user's profile
 - If data is missing, kindly ask the user to complete their profile
+
+HANDLING FOLLOW-UPS AND REFERENCES:
+- When users say "that", "it", "this", understand they're referring to the previous topic
+- Maintain conversation continuity by acknowledging what was discussed
+- Provide additional details when asked "tell me more" or "explain"
+- Offer alternatives when asked for "something else" or "different options"
+- Remember context from the last 5-10 messages
+- Use phrases like "As we discussed..." or "Building on that..." for continuity
 
 RESPONSE FORMATTING:
 - Use **bold** for important metrics (e.g., **BMI: 24.2**)
@@ -195,44 +204,92 @@ class AIChatService {
   }
 
   /**
-   * Detect conversation type from user message
+   * Detect conversation type from user message with fuzzy matching
    */
   detectConversationType(message) {
     const lowerMessage = message.toLowerCase();
     
-    // Check for specific conversation types
-    if (lowerMessage.includes('bmi') || lowerMessage.includes('weight') || 
-        lowerMessage.includes('wellness score') || lowerMessage.includes('health metric')) {
-      return 'health_metrics';
+    // Use multiple keywords for better detection
+    const patterns = {
+      health_metrics: [
+        'bmi', 'weight', 'wellness', 'health metric', 'body mass',
+        'weigh', 'heavy', 'pounds', 'kilos', 'kg', 'lbs',
+        'wellness score', 'health score', 'metrics', 'measurements'
+      ],
+      progress: [
+        'progress', 'goal', 'achievement', 'how am i doing',
+        'results', 'improvement', 'tracking', 'losing weight',
+        'gaining', 'reached', 'target', 'milestone', 'journey'
+      ],
+      meal_plans: [
+        'meal', 'breakfast', 'lunch', 'dinner', 'snack',
+        'eat', 'food', 'diet', 'menu', 'hungry',
+        'recipe for today', 'meal plan', 'what to eat'
+      ],
+      recipes: [
+        'recipe', 'cook', 'dish', 'ingredient', 'prepare',
+        'make', 'cooking', 'kitchen', 'instructions'
+      ],
+      nutrition_analysis: [
+        'nutrition', 'calorie', 'protein', 'carb', 'macro',
+        'nutritional', 'nutrients', 'vitamins', 'minerals',
+        'fiber', 'sugar', 'sodium', 'fat'
+      ],
+      general_wellness: [
+        'exercise', 'workout', 'sleep', 'stress', 'water',
+        'hydration', 'wellness', 'health tip', 'fitness',
+        'yoga', 'meditation', 'rest', 'energy', 'tired'
+      ]
+    };
+    
+    // Check each pattern for matches
+    for (const [type, keywords] of Object.entries(patterns)) {
+      if (keywords.some(keyword => lowerMessage.includes(keyword))) {
+        return type;
+      }
     }
     
-    if (lowerMessage.includes('progress') || lowerMessage.includes('goal') || 
-        lowerMessage.includes('achievement') || lowerMessage.includes('how am i doing')) {
-      return 'progress';
+    // Check for common misspellings or variations
+    if (this.checkForTypos(lowerMessage)) {
+      return this.detectTypeFromTypo(lowerMessage);
     }
     
-    if (lowerMessage.includes('meal plan') || lowerMessage.includes('breakfast') || 
-        lowerMessage.includes('lunch') || lowerMessage.includes('dinner') || 
-        lowerMessage.includes('what should i eat') || lowerMessage.includes('meal')) {
-      return 'meal_plans';
-    }
+    return null;
+  }
+  
+  /**
+   * Check for common typos and misspellings
+   */
+  checkForTypos(message) {
+    const typoPatterns = [
+      { pattern: /wieght|weigth|wheit/i, type: 'health_metrics' },
+      { pattern: /brakfast|breakfst|brekfast/i, type: 'meal_plans' },
+      { pattern: /exercice|exersize|excercise/i, type: 'general_wellness' },
+      { pattern: /protien|protean/i, type: 'nutrition_analysis' },
+      { pattern: /recepie|recipie/i, type: 'recipes' },
+      { pattern: /progres|progess/i, type: 'progress' }
+    ];
     
-    if (lowerMessage.includes('recipe') || lowerMessage.includes('cook') || 
-        lowerMessage.includes('dish') || lowerMessage.includes('ingredient')) {
-      return 'recipes';
-    }
+    return typoPatterns.some(p => p.pattern.test(message));
+  }
+  
+  /**
+   * Detect type from typo
+   */
+  detectTypeFromTypo(message) {
+    const typoPatterns = [
+      { pattern: /wieght|weigth|wheit/i, type: 'health_metrics' },
+      { pattern: /brakfast|breakfst|brekfast/i, type: 'meal_plans' },
+      { pattern: /exercice|exersize|excercise/i, type: 'general_wellness' },
+      { pattern: /protien|protean/i, type: 'nutrition_analysis' },
+      { pattern: /recepie|recipie/i, type: 'recipes' },
+      { pattern: /progres|progess/i, type: 'progress' }
+    ];
     
-    if (lowerMessage.includes('nutrition') || lowerMessage.includes('calorie') || 
-        lowerMessage.includes('protein') || lowerMessage.includes('carb') || 
-        lowerMessage.includes('macro') || lowerMessage.includes('nutritional')) {
-      return 'nutrition_analysis';
-    }
-    
-    if (lowerMessage.includes('exercise') || lowerMessage.includes('workout') || 
-        lowerMessage.includes('sleep') || lowerMessage.includes('stress') || 
-        lowerMessage.includes('water') || lowerMessage.includes('hydration') ||
-        lowerMessage.includes('wellness') || lowerMessage.includes('health tip')) {
-      return 'general_wellness';
+    for (const pattern of typoPatterns) {
+      if (pattern.pattern.test(message)) {
+        return pattern.type;
+      }
     }
     
     return null;
@@ -262,8 +319,23 @@ class AIChatService {
 
   async generateResponse(conversation, userMessage, userId) {
     try {
-      // Get conversation context
+      // Get conversation context and history
       const context = conversation.getContextForAI();
+      const history = conversation.getConversationHistory();
+      
+      // Resolve references in the message (handle "that", "it", etc.)
+      const referenceInfo = contextManager.resolveReferences(userMessage, history);
+      const processedMessage = referenceInfo.resolvedMessage;
+      
+      // Update context manager state
+      const queryType = this.detectConversationType(processedMessage);
+      contextManager.updateConversationState(processedMessage, queryType);
+      contextManager.setConversationMode(context.mode);
+      
+      // Log reference resolution if it occurred
+      if (referenceInfo.hasReference) {
+        console.log(`[AI Chat] Reference resolved: "${userMessage}" → "${processedMessage}"`);
+      }
       
       // Build messages array with system prompt and history
       const messages = [
@@ -274,7 +346,7 @@ class AIChatService {
 
       // If no OpenAI key, return mock response
       if (!openai) {
-        return this.getMockResponse(userMessage, context, userId);
+        return this.getMockResponse(processedMessage, context, userId, referenceInfo);
       }
 
       // Call OpenAI API with function calling
@@ -330,8 +402,21 @@ class AIChatService {
         finalResponse = finalCompletion.choices[0].message.content;
       }
 
+      // Adjust final response based on mode and context
+      finalResponse = contextManager.adjustResponseForMode(finalResponse);
+      
+      // Add context awareness to response
+      finalResponse = contextManager.generateContextAwareResponse(
+        finalResponse,
+        referenceInfo,
+        queryType
+      );
+
       // Log for debugging
       console.log(`[AI Chat] User: ${userMessage.substring(0, 50)}...`);
+      if (referenceInfo.hasReference) {
+        console.log(`[AI Chat] Resolved to: ${processedMessage.substring(0, 50)}...`);
+      }
       console.log(`[AI Chat] Response: ${finalResponse.substring(0, 50)}...`);
       console.log(`[AI Chat] Tokens used: ${completion.usage?.total_tokens || 'unknown'}`);
       if (functionCalls.length > 0) {
@@ -351,7 +436,7 @@ class AIChatService {
       console.error('AI generation error:', error);
       
       // Fallback to mock response with function calling
-      return this.getMockResponse(userMessage, context, userId);
+      return this.getMockResponse(userMessage, context, userId, null);
     }
   }
 
@@ -385,8 +470,22 @@ class AIChatService {
     return prompt;
   }
 
-  async getMockResponse(message, context, userId) {
+  async getMockResponse(message, context, userId, referenceInfo = null) {
     const lowerMessage = message.toLowerCase();
+    
+    // If this is a follow-up, handle it specially
+    if (referenceInfo && referenceInfo.hasReference) {
+      return this.handleFollowUp(message, context, userId, referenceInfo);
+    }
+    
+    // Check if asking for more details or alternatives
+    if (contextManager.isElaborationRequest(message)) {
+      return this.handleElaboration(context, userId);
+    }
+    
+    if (contextManager.isAlternativeRequest(message)) {
+      return this.handleAlternativeRequest(context, userId);
+    }
     
     // Detect conversation type
     const conversationType = this.detectConversationType(message);
@@ -761,6 +860,446 @@ class AIChatService {
       responseContent += `• Receive sleep and hydration tips\n`;
       responseContent += `• General wellness insights\n\n`;
       responseContent += `Try asking: "What's my BMI?", "Show me today's meal plan", or "What exercises should I do?"`;
+    }
+    
+    return {
+      content: responseContent,
+      functionCalls: null
+    };
+  }
+
+  /**
+   * Handle follow-up questions with context
+   */
+  async handleFollowUp(message, context, userId, referenceInfo) {
+    const resolved = referenceInfo.resolvedMessage;
+    const lowerMessage = message.toLowerCase();
+    console.log(`[Follow-up] Type: ${referenceInfo.referenceType}, Message: "${message}" → "${resolved}"`);
+    
+    // Handle specific follow-up types
+    if (referenceInfo.referenceType === 'evaluation') {
+      return this.handleEvaluation(context, userId);
+    }
+    
+    if (referenceInfo.referenceType === 'explanation') {
+      return this.handleExplanation(context, userId);
+    }
+    
+    if (referenceInfo.referenceType === 'improvement') {
+      return this.handleImprovementRequest(context, userId);
+    }
+    
+    // Check for improvement questions even without perfect reference detection
+    if (lowerMessage.includes('improve') || lowerMessage.includes('better') || 
+        lowerMessage.includes('increase') || lowerMessage.includes('boost') ||
+        lowerMessage.includes('enhance') || lowerMessage.includes('optimize')) {
+      return this.handleImprovementRequest(context, userId);
+    }
+    
+    // Get the appropriate response based on resolved message
+    const response = await this.getMockResponse(resolved, context, userId, null);
+    
+    // Add acknowledgment of the reference
+    const acknowledgments = {
+      'elaboration': 'Let me provide more details:\n\n',
+      'explanation': 'Let me explain:\n\n',
+      'evaluation': 'Let me evaluate that:\n\n',
+      'modification': 'I\'ll help you with that change:\n\n',
+      'permission': 'Regarding your question:\n\n'
+    };
+    
+    const prefix = acknowledgments[referenceInfo.referenceType] || 'About that:\n\n';
+    
+    if (response.content) {
+      response.content = prefix + response.content;
+    }
+    
+    return response;
+  }
+
+  /**
+   * Handle evaluation questions like "is that good?"
+   */
+  async handleEvaluation(context, userId) {
+    const lastMetric = contextManager.mentionedEntities.metric;
+    const lastMeal = contextManager.mentionedEntities.meal;
+    let responseContent = '';
+    
+    // Get user's latest metrics for context
+    const metricsResult = await executeFunction('get_health_metrics', userId, {
+      metric_type: 'all',
+      time_period: 'current'
+    });
+    
+    if (lastMetric === 'BMI' || (metricsResult.data && metricsResult.data.bmi)) {
+      const bmi = metricsResult.data?.bmi?.value || 22.3;
+      
+      responseContent = `Yes, your BMI of **${bmi}** is good! Here's why:\n\n`;
+      
+      if (bmi >= 18.5 && bmi < 25) {
+        responseContent += `✅ **You're in the healthy range** (18.5-24.9)\n`;
+        responseContent += `• Lower risk of heart disease and diabetes\n`;
+        responseContent += `• Good balance between muscle and fat\n`;
+        responseContent += `• Optimal range for most physical activities\n\n`;
+        responseContent += `**Keep doing what you're doing!** Your current weight management is working well.`;
+      } else if (bmi < 18.5) {
+        responseContent = `Your BMI of **${bmi}** is below the healthy range:\n\n`;
+        responseContent += `⚠️ **Underweight** (below 18.5)\n`;
+        responseContent += `• May indicate insufficient nutrition\n`;
+        responseContent += `• Could affect energy levels and immune system\n\n`;
+        responseContent += `**Recommendation:** Consider increasing caloric intake with nutrient-dense foods.`;
+      } else if (bmi >= 25 && bmi < 30) {
+        responseContent = `Your BMI of **${bmi}** is slightly elevated:\n\n`;
+        responseContent += `⚠️ **Overweight range** (25-29.9)\n`;
+        responseContent += `• Slightly increased health risks\n`;
+        responseContent += `• May benefit from modest weight loss\n\n`;
+        responseContent += `**Recommendation:** Small changes to diet and exercise can help you reach the healthy range.`;
+      } else {
+        responseContent = `Your BMI of **${bmi}** indicates obesity:\n\n`;
+        responseContent += `⚠️ **Needs attention** (30+)\n`;
+        responseContent += `• Increased risk of health complications\n`;
+        responseContent += `• Would benefit from weight management\n\n`;
+        responseContent += `**Recommendation:** Consider consulting with a healthcare provider for a personalized plan.`;
+      }
+    } else if (lastMetric === 'wellness score' || contextManager.currentTopic === 'health_metrics') {
+      const score = metricsResult.data?.wellnessScore?.overall || 90;
+      
+      if (score >= 80) {
+        responseContent = `**Excellent!** Your wellness score of ${score}/100 is fantastic! 🎉\n\n`;
+        responseContent += `This means:\n`;
+        responseContent += `• You're maintaining healthy habits consistently\n`;
+        responseContent += `• Your lifestyle choices are supporting your health\n`;
+        responseContent += `• You're on track with your wellness goals\n\n`;
+        responseContent += `Keep up the amazing work!`;
+      } else if (score >= 60) {
+        responseContent = `**Good!** Your wellness score of ${score}/100 is solid.\n\n`;
+        responseContent += `This indicates:\n`;
+        responseContent += `• You're doing well in most areas\n`;
+        responseContent += `• There's room for improvement\n`;
+        responseContent += `• You have a good foundation to build on\n\n`;
+        responseContent += `Focus on your weakest area to boost your score further.`;
+      } else {
+        responseContent = `Your wellness score of ${score}/100 has room for improvement.\n\n`;
+        responseContent += `This suggests:\n`;
+        responseContent += `• Several areas need attention\n`;
+        responseContent += `• Small changes can make a big difference\n\n`;
+        responseContent += `Let's work on improving one area at a time!`;
+      }
+    } else if (lastMeal) {
+      responseContent = `Yes, that's a good choice for ${lastMeal}!\n\n`;
+      responseContent += `It provides:\n`;
+      responseContent += `• Balanced macronutrients\n`;
+      responseContent += `• Good energy for your day\n`;
+      responseContent += `• Aligns with your calorie goals\n\n`;
+      responseContent += `Feel free to enjoy it!`;
+    } else {
+      responseContent = `Based on what we just discussed, yes, that looks good!\n\n`;
+      responseContent += `You're on the right track with your wellness journey. `;
+      responseContent += `Keep making those positive choices!`;
+    }
+    
+    return {
+      content: responseContent,
+      functionCalls: metricsResult.data ? [{
+        name: 'get_health_metrics',
+        parameters: { metric_type: 'all', time_period: 'current' },
+        result: metricsResult
+      }] : null
+    };
+  }
+
+  /**
+   * Handle improvement requests like "how can I improve it?"
+   */
+  async handleImprovementRequest(context, userId) {
+    const lastMetric = contextManager.mentionedEntities.metric;
+    const lastTopic = contextManager.currentTopic;
+    let responseContent = '';
+    
+    // Get current metrics for context
+    const metricsResult = await executeFunction('get_health_metrics', userId, {
+      metric_type: 'all',
+      time_period: 'current'
+    });
+    
+    if (lastMetric === 'BMI' || lastTopic === 'health_metrics') {
+      const bmi = metricsResult.data?.bmi?.value || 22.3;
+      
+      responseContent = `Here's how to improve your BMI and overall health:\n\n`;
+      
+      if (bmi >= 18.5 && bmi < 25) {
+        responseContent += `**You're already in the healthy range!** To maintain or optimize:\n\n`;
+        responseContent += `**1. Stay Active:**\n`;
+        responseContent += `• Aim for 150 minutes of moderate exercise weekly\n`;
+        responseContent += `• Include strength training 2-3x per week\n\n`;
+        responseContent += `**2. Balanced Nutrition:**\n`;
+        responseContent += `• Focus on whole foods\n`;
+        responseContent += `• Maintain consistent meal timing\n\n`;
+        responseContent += `**3. Healthy Habits:**\n`;
+        responseContent += `• Prioritize 7-9 hours of sleep\n`;
+        responseContent += `• Stay hydrated (aim for 2-3L water daily)\n`;
+        responseContent += `• Manage stress through meditation or yoga`;
+      } else if (bmi < 18.5) {
+        responseContent += `**To gain healthy weight:**\n\n`;
+        responseContent += `**1. Increase Calories:**\n`;
+        responseContent += `• Add 300-500 calories to daily intake\n`;
+        responseContent += `• Focus on nutrient-dense foods\n`;
+        responseContent += `• Include healthy fats (nuts, avocados)\n\n`;
+        responseContent += `**2. Build Muscle:**\n`;
+        responseContent += `• Strength training 3-4x per week\n`;
+        responseContent += `• Increase protein intake (1.6g per kg body weight)\n\n`;
+        responseContent += `**3. Meal Frequency:**\n`;
+        responseContent += `• Eat 5-6 smaller meals throughout the day\n`;
+        responseContent += `• Never skip breakfast`;
+      } else {
+        responseContent += `**To reach a healthier BMI:**\n\n`;
+        responseContent += `**1. Create Calorie Deficit:**\n`;
+        responseContent += `• Reduce daily intake by 300-500 calories\n`;
+        responseContent += `• Track your meals for awareness\n\n`;
+        responseContent += `**2. Increase Activity:**\n`;
+        responseContent += `• Start with 30-minute daily walks\n`;
+        responseContent += `• Gradually add strength training\n`;
+        responseContent += `• Aim for 10,000 steps daily\n\n`;
+        responseContent += `**3. Nutrition Changes:**\n`;
+        responseContent += `• Increase protein and fiber\n`;
+        responseContent += `• Reduce processed foods\n`;
+        responseContent += `• Control portion sizes`;
+      }
+      
+      responseContent += `\n\n💡 **Start with one small change this week!**`;
+      
+    } else if (lastMetric === 'wellness score') {
+      const score = metricsResult.data?.wellnessScore?.overall || 90;
+      const components = metricsResult.data?.wellnessScore?.components || {};
+      
+      // Find weakest component
+      let weakestArea = 'habits';
+      let lowestScore = 25;
+      
+      Object.entries(components).forEach(([key, value]) => {
+        if (value < lowestScore) {
+          weakestArea = key;
+          lowestScore = value;
+        }
+      });
+      
+      responseContent = `To improve your wellness score from ${score}/100:\n\n`;
+      responseContent += `**Focus on your weakest area: ${weakestArea}**\n\n`;
+      
+      const improvements = {
+        'bmi': [
+          '• Work towards optimal BMI range (18.5-24.9)',
+          '• Track weight weekly, not daily',
+          '• Focus on body composition, not just weight'
+        ],
+        'activity': [
+          '• Increase daily movement (aim for 10,000 steps)',
+          '• Add 30 minutes of exercise 5x per week',
+          '• Try different activities to find what you enjoy'
+        ],
+        'progress': [
+          '• Set specific, measurable goals',
+          '• Track your metrics consistently',
+          '• Celebrate small victories along the way'
+        ],
+        'habits': [
+          '• Establish a consistent sleep schedule',
+          '• Practice stress management daily',
+          '• Build one healthy habit at a time'
+        ]
+      };
+      
+      const tips = improvements[weakestArea] || improvements['habits'];
+      tips.forEach(tip => {
+        responseContent += `${tip}\n`;
+      });
+      
+      responseContent += `\n**Quick wins for this week:**\n`;
+      responseContent += `1. Choose one item from above to start\n`;
+      responseContent += `2. Track it daily for accountability\n`;
+      responseContent += `3. Review progress next week\n\n`;
+      responseContent += `Small consistent improvements lead to big results!`;
+      
+    } else {
+      // General improvement advice
+      responseContent = `Here are ways to improve your overall wellness:\n\n`;
+      responseContent += `**1. Physical Activity:**\n`;
+      responseContent += `• Start with 20-minute daily walks\n`;
+      responseContent += `• Add strength training 2x per week\n\n`;
+      responseContent += `**2. Nutrition:**\n`;
+      responseContent += `• Eat more whole foods\n`;
+      responseContent += `• Stay hydrated (8-10 glasses water)\n\n`;
+      responseContent += `**3. Recovery:**\n`;
+      responseContent += `• Prioritize 7-9 hours sleep\n`;
+      responseContent += `• Practice stress management\n\n`;
+      responseContent += `Which area would you like to focus on first?`;
+    }
+    
+    return {
+      content: responseContent,
+      functionCalls: metricsResult.data ? [{
+        name: 'get_health_metrics',
+        parameters: { metric_type: 'all', time_period: 'current' },
+        result: metricsResult
+      }] : null
+    };
+  }
+
+  /**
+   * Handle explanation requests like "why is that?"
+   */
+  async handleExplanation(context, userId) {
+    const lastMetric = contextManager.mentionedEntities.metric;
+    let responseContent = 'Let me explain why:\n\n';
+    
+    if (lastMetric === 'BMI') {
+      responseContent += `**BMI (Body Mass Index) matters because:**\n\n`;
+      responseContent += `• It's a screening tool for health risks\n`;
+      responseContent += `• Correlates with various health conditions\n`;
+      responseContent += `• Helps track weight changes over time\n\n`;
+      responseContent += `**However, remember:**\n`;
+      responseContent += `• It doesn't measure body fat directly\n`;
+      responseContent += `• Doesn't distinguish muscle from fat\n`;
+      responseContent += `• Should be considered alongside other health markers\n\n`;
+      responseContent += `Your BMI is just one piece of your overall health picture!`;
+    } else if (lastMetric === 'wellness score') {
+      responseContent += `**Your wellness score is calculated from:**\n\n`;
+      responseContent += `• **BMI (25%)**: Your weight-to-height ratio\n`;
+      responseContent += `• **Activity (25%)**: Exercise frequency and intensity\n`;
+      responseContent += `• **Progress (25%)**: Movement towards your goals\n`;
+      responseContent += `• **Habits (25%)**: Sleep, nutrition, stress management\n\n`;
+      responseContent += `Each component contributes equally to give you a holistic view of your wellness.`;
+    } else {
+      responseContent += `This recommendation is based on:\n\n`;
+      responseContent += `• Current health guidelines\n`;
+      responseContent += `• Your personal profile and goals\n`;
+      responseContent += `• Evidence-based wellness practices\n\n`;
+      responseContent += `The goal is to help you achieve sustainable, long-term health improvements.`;
+    }
+    
+    return {
+      content: responseContent,
+      functionCalls: null
+    };
+  }
+
+  /**
+   * Handle requests for more information
+   */
+  async handleElaboration(context, userId) {
+    const lastTopic = contextManager.currentTopic;
+    const lastEntities = contextManager.mentionedEntities;
+    
+    let responseContent = 'Let me provide additional details:\n\n';
+    
+    // Provide more details based on last topic
+    if (lastTopic === 'health_metrics' && lastEntities.metric) {
+      const functionResult = await executeFunction('get_health_metrics', userId, {
+        metric_type: 'all',
+        time_period: 'monthly'
+      });
+      
+      if (functionResult.data) {
+        responseContent += `**Extended Health Analysis:**\n\n`;
+        
+        // Add trend analysis
+        if (functionResult.data.trend) {
+          responseContent += `**30-Day Trend:**\n`;
+          responseContent += `• Starting point: ${functionResult.data.trend.startValue} kg\n`;
+          responseContent += `• Current: ${functionResult.data.trend.endValue} kg\n`;
+          responseContent += `• Total change: ${functionResult.data.trend.change} kg\n`;
+          responseContent += `• Data points tracked: ${functionResult.data.trend.dataPoints}\n\n`;
+        }
+        
+        // Add component breakdown
+        if (functionResult.data.wellnessScore?.components) {
+          responseContent += `**Wellness Score Components:**\n`;
+          const components = functionResult.data.wellnessScore.components;
+          Object.entries(components).forEach(([key, value]) => {
+            responseContent += `• ${key}: ${value}/25\n`;
+          });
+        }
+      }
+      
+      return {
+        content: responseContent,
+        functionCalls: [{
+          name: 'get_health_metrics',
+          parameters: { metric_type: 'all', time_period: 'monthly' },
+          result: functionResult
+        }]
+      };
+    }
+    
+    // Default elaboration
+    responseContent += `Based on our previous discussion about ${lastTopic || 'your wellness'}, `;
+    responseContent += `here are some additional insights:\n\n`;
+    responseContent += `• Consider tracking your progress daily for better insights\n`;
+    responseContent += `• Small consistent changes lead to lasting results\n`;
+    responseContent += `• Remember to celebrate small victories\n\n`;
+    responseContent += `Would you like specific details about any particular aspect?`;
+    
+    return {
+      content: responseContent,
+      functionCalls: null
+    };
+  }
+
+  /**
+   * Handle requests for alternatives
+   */
+  async handleAlternativeRequest(context, userId) {
+    const lastEntities = contextManager.mentionedEntities;
+    let responseContent = '';
+    
+    // Provide alternatives based on what was discussed
+    if (lastEntities.meal) {
+      responseContent = `Here are alternative options for ${lastEntities.meal}:\n\n`;
+      
+      // Get meal alternatives
+      const mealAlternatives = {
+        breakfast: [
+          '**Option 1:** Overnight oats with chia seeds and berries',
+          '**Option 2:** Vegetable omelet with whole grain toast',
+          '**Option 3:** Smoothie bowl with granola and nuts'
+        ],
+        lunch: [
+          '**Option 1:** Grilled chicken salad with quinoa',
+          '**Option 2:** Turkey and avocado wrap',
+          '**Option 3:** Lentil soup with mixed vegetables'
+        ],
+        dinner: [
+          '**Option 1:** Baked salmon with roasted vegetables',
+          '**Option 2:** Stir-fried tofu with brown rice',
+          '**Option 3:** Lean beef with sweet potato'
+        ]
+      };
+      
+      const alternatives = mealAlternatives[lastEntities.meal] || [
+        '**Option 1:** Grilled protein with vegetables',
+        '**Option 2:** Whole grain bowl with legumes',
+        '**Option 3:** Soup or salad with lean protein'
+      ];
+      
+      alternatives.forEach(alt => {
+        responseContent += `${alt}\n`;
+      });
+      
+      responseContent += `\nAll options are balanced and nutritious. Which one appeals to you?`;
+      
+    } else if (lastEntities.exercise) {
+      responseContent = `Here are alternative exercises:\n\n`;
+      responseContent += `• **Low Impact:** Swimming, yoga, walking\n`;
+      responseContent += `• **Moderate:** Cycling, dancing, hiking\n`;
+      responseContent += `• **High Intensity:** Running, HIIT, CrossFit\n\n`;
+      responseContent += `Choose based on your fitness level and preferences.`;
+      
+    } else {
+      responseContent = `I'd be happy to suggest alternatives! Could you specify what you'd like alternatives for?\n\n`;
+      responseContent += `I can provide alternatives for:\n`;
+      responseContent += `• Meals and recipes\n`;
+      responseContent += `• Exercise routines\n`;
+      responseContent += `• Wellness strategies\n`;
     }
     
     return {
