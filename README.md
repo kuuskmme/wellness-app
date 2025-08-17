@@ -1,13 +1,13 @@
-# Wellness & Nutrition Platform
+# Wellness & Nutrition Platform with AI Assistant
 
-AI-powered wellness platform with personalized meal planning, recipe management, and nutritional analysis.
+AI-powered wellness platform with personalized meal planning, recipe management, nutritional analysis, and intelligent health assistant.
 
 ## Quick Setup (15 minutes)
 
 ### Prerequisites
 - Node.js 14+ & npm 6+
 - MongoDB 4.4+ running locally
-- OpenAI API key (optional - system works without it)
+- OpenAI API key (required for AI Assistant features)
 
 ### Installation
 ```bash
@@ -18,6 +18,10 @@ cd wellness-platform
 # Install all dependencies
 cd backend && npm install
 cd ../frontend && npm install
+
+# Install additional dependencies for AI Assistant
+cd backend
+npm install openai react-markdown
 ```
 
 ### Configuration
@@ -29,9 +33,12 @@ JWT_SECRET=change-this-secret-key-12345
 JWT_REFRESH_SECRET=change-this-refresh-key-67890
 FRONTEND_URL=http://localhost:3000
 
-# Optional for AI features
+# AI Assistant Configuration (Required for Step 1+)
 OPENAI_API_KEY=sk-your-key-here
 AI_MODEL=gpt-3.5-turbo
+AI_TEMPERATURE=0.6
+AI_MAX_TOKENS=500
+AI_TOP_P=0.95
 ```
 
 ### Run Application
@@ -45,9 +52,90 @@ cd frontend && npm start
 
 Access at `http://localhost:3000`
 
-## Key Features & Review Points
+## AI Assistant Features (Project 3)
 
-### ✅ Core Functionality
+### System Prompt Strategy
+The AI assistant uses a comprehensive system prompt that defines:
+- **Role**: Wellness assistant specializing in health, fitness, and nutrition
+- **Capabilities**: Health metrics analysis, meal planning, recipe suggestions, progress tracking
+- **Tone**: Friendly, supportive, encouraging, and empathetic
+- **Boundaries**: No medical diagnoses, always suggests professional consultation for medical concerns
+- **Domain Knowledge**: Understanding of BMI, wellness scores, nutrition principles, fitness goals
+
+### AI Model Rationale
+- **Model**: GPT-3.5-turbo selected for optimal balance of:
+  - Context window (4,096 tokens) sufficient for 5-10 turn conversations
+  - Low latency (~1-2 seconds response time)
+  - Cost-effectiveness for high-volume usage
+  - Reliable function calling support
+- **Parameters**:
+  - Temperature: 0.6 (balanced consistency vs creativity)
+  - Top-p: 0.95 (focused relevance)
+  - Max tokens: 500 (concise responses)
+
+### Conversation Approach
+- **History Management**: Maintains rolling window of 10 messages
+- **Context Preservation**: Stores user profile data (name, goals, metrics)
+- **Session Handling**: Auto-creates new sessions after 1 hour of inactivity
+- **Memory Efficiency**: Automatic pruning of old messages to manage tokens
+
+### Error Handling
+- **API Failures**: Falls back to mock responses when OpenAI unavailable
+- **Rate Limiting**: Implements retry logic with exponential backoff
+- **Invalid Input**: Validates message length (max 1000 chars) and content
+- **Timeout Handling**: 30-second timeout with user-friendly error messages
+- **Recovery Strategy**: Maintains conversation state even after errors
+
+### Function Calling (Step 2 Ready)
+The system is architected to support 4+ function calls:
+1. `get_health_metrics` - Retrieve BMI, weight, wellness scores
+2. `get_nutrition_data` - Access meal plans, recipes, nutritional analysis
+3. `get_progress_summary` - Track goal progress and achievements
+4. `get_general_insights` - Provide wellness tips and recommendations
+
+Each function will include:
+- Parameter validation (enums, ranges, required fields)
+- Error handling for missing/incomplete data
+- Standardized unit conversion (kg, cm, kcal)
+- User data isolation (no PII exposure)
+
+### Response Format Examples
+
+#### Health Metrics Response
+```
+Your **BMI is 24.2**, which falls in the normal weight range (18.5-24.9). 
+Your wellness score is **78/100**, showing good overall health habits.
+```
+
+#### Meal Planning Response
+```
+Here's your breakfast suggestion:
+• **Scrambled eggs** (3 eggs) - 18g protein
+• **Whole grain toast** (2 slices) - 8g protein  
+• **Greek yogurt** with berries - 15g protein
+Total: **41g protein**, 520 calories
+```
+
+#### Progress Tracking Response
+```
+Great progress this month!
+• Weight loss: **2.3 kg** ✓
+• Progress to goal: **65%**
+• Activity level: Increased by **20%**
+```
+
+## Core Features & Review Points
+
+### ✅ Step 1 Completed
+- **Conversation Model**: Stores chat history with timestamps and user context
+- **Chat Endpoints**: Session management, history retrieval, message processing
+- **AI Integration**: OpenAI GPT-3.5 with comprehensive system prompt
+- **Error Handling**: Graceful fallbacks, timeout handling, validation
+- **Response Formatting**: Markdown support with bullets, bold text, clear structure
+- **Context Management**: Maintains 5-10 message history without loss
+- **Mode Support**: Concise/detailed response modes
+
+### ✅ Core Functionality (From Projects 1-2)
 - **Authentication**: JWT with refresh tokens, email verification
 - **Health Profile**: BMI calculation, wellness scoring, activity tracking
 - **Nutrition Preferences**: 15+ dietary options, 10+ allergy types
@@ -56,24 +144,30 @@ Access at `http://localhost:3000`
 - **Shopping Lists**: 5+ auto-categories, quantity adjustment
 - **Nutritional Analysis**: Real-time calculations, macro tracking, visualizations
 
-### ✅ Technical Implementation
-- **AI Strategy**: 
-  - Sequential prompting with few-shot examples
-  - Function calling for nutrition calculations
-  - RAG for recipe search (vector embeddings)
-  - Fallback to mock data when AI unavailable
-- **Data Handling**:
-  - ISO 8601 dates throughout (moment.js)
-  - Standardized units (g/ml/kcal/min)
-  - Content versioning for meal plans
-  - Reuses Project 1 data (no duplication)
-- **Error Recovery**:
-  - API rate limiting with retry logic
-  - Caching for failed requests
-  - Graceful degradation without AI
-
 ## Testing Checklist
 
+### AI Assistant Testing (Step 1)
+1. **Chat Initialization**: 
+   - Navigate to `/chat` or click "AI Assistant" from dashboard
+   - Verify welcome message appears
+   - Check session creation in MongoDB
+
+2. **Conversation Flow**:
+   - Send "What's my BMI?" - verify formatted response
+   - Send "Help me with breakfast" - verify meal suggestions
+   - Send "How's my progress?" - verify progress tracking
+   - Test 5+ message exchanges to verify context retention
+
+3. **Error Handling**:
+   - Send empty message - verify validation
+   - Send 1000+ character message - verify length limit
+   - Disconnect internet briefly - verify error recovery
+
+4. **Mode Testing**:
+   - Toggle between concise/detailed modes
+   - Verify response length changes appropriately
+
+### Existing Features Testing
 1. **Register** → Login → Complete **Health Profile**
 2. Set **Nutrition Preferences** (verify 15+ dietary, 10+ allergies)
 3. Generate **Meal Plan** (check sequential prompting in logs)
@@ -86,6 +180,13 @@ Access at `http://localhost:3000`
 
 Base: `http://localhost:5000/api`
 
+### AI Assistant Routes (New)
+- `POST /chat/start` - Initialize chat session
+- `GET /chat/history/:sessionId?` - Get conversation history
+- `POST /chat/message` - Send message to AI
+- `PUT /chat/mode` - Update response mode
+- `POST /chat/end` - End conversation session
+
 ### Nutrition Routes
 - `POST /nutrition/preferences/sync` - Sync with health profile
 - `GET/POST /nutrition/meal-plan` - Generate plans
@@ -94,133 +195,62 @@ Base: `http://localhost:5000/api`
 - `GET /nutrition/shopping-list` - Categorized list
 - `GET /nutrition/analysis/daily` - Nutrition tracking
 
-## Project Structure
+## Project Structure Updates
+
 ```
-wellness-platform/
-│
-├── README.md
-├── .gitignore
-├── package.json
-├── package-lock.json
-│
-├── backend/
-│   ├── package.json
-│   ├── package-lock.json
-│   ├── server.js                        # Express server setup
-│   ├── .env                              # Environment variables
-│   │
-│   ├── config/
-│   │   └── passport.js                  # Passport JWT strategy
-│   │
-│   ├── middleware/
-│   │   ├── auth.js                      # Authentication middleware
-│   │   └── security.js                  # Security middleware
-│   │
-│   ├── models/
-│   │   ├── User.js                      # User authentication model
-│   │   ├── HealthProfile.js             # Health profile with BMI, wellness score
-│   │   ├── HealthHistory.js             # Historical health data tracking
-│   │   ├── AIInsight.js                 # AI-generated insights storage
-│   │   ├── UserPreferences.js           # Nutrition preferences (dietary, allergies)
-│   │   ├── Recipe.js                    # Recipe model with nutrition data
-│   │   ├── Ingredient.js                # Ingredient model with units
-│   │   └── MealPlan.js                  # Meal plan with versioning support
-│   │
-│   ├── routes/
-│   │   ├── auth.js                      # Authentication routes
-│   │   ├── healthProfile.js             # Health profile CRUD routes
-│   │   ├── analytics.js                 # Analytics and dashboard routes
-│   │   └── nutrition.js                 # Nutrition routes (preferences, meal plans, recipes)
-│   │                                     # - POST /preferences/sync (NEW)
-│   │                                     # - GET/POST /meal-plan
-│   │                                     # - GET /meal-plan/:id (NEW)
-│   │                                     # - Versioning routes (NEW)
-│   │
-│   └── utils/
-│       ├── email.js                     # Email service for verification
-│       ├── jwt.js                       # JWT token utilities
-│       ├── aiService.js                 # OpenAI integration for insights
-│       ├── mealPlanningService.js       # Meal plan generation with sequential prompting
-│       ├── ragService.js                # RAG for recipe search
-│       ├── nutritionCalculator.js       # Nutrition calculations & function calling
-│       ├── shoppingListService.js       # Shopping list generation (5+ categories)
-│       └── nutritionAnalysisService.js  # Daily/weekly nutrition analysis
-│
-└── frontend/
-    ├── package.json
-    ├── package-lock.json
-    ├── tailwind.config.js               # Tailwind CSS configuration
-    │
-    ├── public/
-    │   ├── index.html
-    │   ├── favicon.ico
-    │   └── manifest.json
-    │
-    └── src/
-        ├── index.js                     # React app entry point
-        ├── index.css                    # Global styles with Tailwind
-        ├── App.js                       # Main app component with routing
-        ├── App.css                      # App-specific styles
-        │
-        ├── components/
-        │   ├── Charts.js                # Chart components (Line, Bar, Doughnut, etc.)
-        │   ├── ErrorBoundary.js         # Error boundary wrapper
-        │   ├── ProtectedRoute.js       # Route protection HOC
-        │   └── TwoFactorSetup.js       # 2FA setup component
-        │
-        ├── context/
-        │   └── AuthContext.js           # Authentication context provider
-        │
-        └── pages/
-            ├── HomePage.js              # Landing page
-            ├── LoginPage.js             # User login
-            ├── RegisterPage.js          # User registration
-            ├── ProfilePage.js           # Health profile management
-            ├── DashboardPage.js         # Main dashboard with wellness score
-            ├── ForgotPasswordPage.js    # Password recovery
-            ├── ResetPasswordPage.js     # Password reset
-            ├── VerifyEmailPage.js       # Email verification
-            ├── VerifyPendingPage.js     # Verification pending notice
-            │
-            # Nutrition Features (Project 2)
-            ├── NutritionPreferencesPage.js  # Dietary preferences, allergies (15+ options)
-            ├── MealPlannerPage.js           # Meal plan generation & management
-            ├── RecipeSearchPage.js          # Recipe search with RAG & visualizations
-            ├── ShoppingListPage.js          # Categorized shopping lists
-            └── NutritionAnalysisPage.js    # Complete nutritional analysis with charts
+backend/
+├── models/
+│   └── Conversation.js          # NEW: Chat history & session management
+├── routes/
+│   └── chat.js                  # NEW: Chat endpoints
+└── utils/
+    └── aiChatService.js         # NEW: AI response generation
+
+frontend/
+└── src/
+    └── pages/
+        └── ChatAssistantPage.js # NEW: Chat interface
+```
 
 ## Common Issues
 
-**MongoDB Connection Failed**
-```bash
-# Ensure MongoDB is running
-mongod --dbpath=/data/db
-```
+**OpenAI API Errors**
+- Verify API key is correct in `.env`
+- Check OpenAI account has credits
+- System falls back to mock responses if API unavailable
 
-**AI Features Not Working**
-- System uses mock data without OpenAI key
-- Check console for "Using mock data" messages
+**Chat History Not Loading**
+- Check MongoDB connection
+- Verify Conversation model indexes created
+- Clear browser cache and reload
 
-**Module Errors**
-```bash
-rm -rf node_modules package-lock.json
-npm install
-```
+**Message Send Failures**
+- Check network connection
+- Verify backend is running on port 5000
+- Check browser console for CORS errors
 
-## For Reviewers
+## Next Steps (Step 2-5)
 
-The platform demonstrates:
-- **Sequential AI prompting** (check backend logs for 3+ step process)
-- **RAG implementation** with vector search
-- **Function calling** for nutrition calculations
-- **Error handling** with fallbacks and retry logic
-- **Data integration** from Project 1 without duplication
-- **15+ dietary preferences** and **10+ allergies** support
-- **500+ recipes/ingredients** in database
-- **5+ shopping list categories** auto-generated
-- **ISO 8601 compliance** for all dates/times
-- **Content versioning** for meal plan restore
+### Step 2: Data Access Layer
+- Implement 4+ function calling endpoints
+- Add parameter validation
+- Integrate with existing health/nutrition data
+
+### Step 3: Personalization
+- Enhance system prompt with user context
+- Add 6 conversation type handlers
+- Implement insights generation
+
+### Step 4: Multi-turn Context
+- Add reference resolution ("that", "it")
+- Implement follow-up handling
+- Add conversation memory management
+
+### Step 5: Integration & Security
+- Add jailbreak protection
+- Implement request tracing
+- Complete integration tests
 
 ---
 
-**Built with Node.js, Express, MongoDB, React, and OpenAI**
+**Built with Node.js, Express, MongoDB, React, and OpenAI GPT-3.5**

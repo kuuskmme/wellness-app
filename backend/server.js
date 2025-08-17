@@ -141,6 +141,7 @@ const initializeIndexes = async () => {
     require('./models/Recipe');
     require('./models/Ingredient');
     require('./models/MealPlan');
+    require('./models/Conversation'); // NEW: Add Conversation model
     
     console.log('✅ Database indexes initialized');
   } catch (error) {
@@ -165,6 +166,7 @@ app.use('/api/auth', require('./routes/auth'));
 app.use('/api/health-profile', require('./routes/healthProfile'));
 app.use('/api/analytics', require('./routes/analytics'));
 app.use('/api/nutrition', require('./routes/nutrition'));
+app.use('/api/chat', require('./routes/chat')); // NEW: AI Assistant chat routes
 
 // Health check endpoint
 app.get('/health', (req, res) => {

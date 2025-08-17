@@ -19,6 +19,7 @@ import MealPlannerPage from './pages/MealPlannerPage';
 import RecipeSearchPage from './pages/RecipeSearchPage';
 import ShoppingListPage from './pages/ShoppingListPage';
 import NutritionAnalysisPage from './pages/NutritionAnalysisPage';
+import ChatAssistantPage from './pages/ChatAssistantPage';
 
 // Navigation component with ALL nutrition links
 const Navigation = () => {
@@ -100,6 +101,9 @@ const Navigation = () => {
                     </div>
                   </div>
                 </div>
+                <Link to="/chat" className="text-gray-700 hover:text-gray-900 px-3 py-2 font-medium">
+                  AI Assistant
+                </Link>
               </div>
             )}
           </div>
@@ -183,7 +187,7 @@ function App() {
                   </ProtectedRoute>
                 }
               />
-              
+              <Route path="/chat" element={<ChatAssistantPage />} /> {/* NEW: AI Assistant route */}
               {/* Protected Routes - Nutrition (USING CORRECT PATHS) */}
               <Route
                 path="/nutrition/preferences"
