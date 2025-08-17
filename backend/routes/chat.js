@@ -243,7 +243,7 @@ router.post('/message', async (req, res) => {
   }
 });
 
-// Update conversation mode
+// Update conversation modee
 router.put('/mode', async (req, res) => {
   try {
     const { sessionId, mode } = req.body;
