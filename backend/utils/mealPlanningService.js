@@ -2,7 +2,7 @@ const OpenAI = require('openai');
 const Recipe = require('../models/Recipe');
 const UserPreferences = require('../models/UserPreferences');
 const HealthProfile = require('../models/HealthProfile');
-const MEAL_TEMPLATES = require('./meal-templates');
+const MealPlan = require('../models/MealPlan');
 
 // Initialize OpenAI with fallback
 let openai = null;
@@ -92,6 +92,348 @@ class MealPlanningService {
     this.modelName = process.env.AI_MODEL || 'gpt-3.5-turbo';
     this.temperature = 0.7;
     this.topP = 0.9;
+  }
+   // Enhanced meal templates with detailed cooking instructions
+  getDetailedMealTemplates() {
+    return {
+      breakfast: [
+        {
+          name: 'Oatmeal with Berries and Nuts',
+          calories: 350,
+          protein: 12,
+          carbs: 55,
+          fat: 8,
+          prepTime: 10,
+          ingredients: [
+            { name: 'Rolled oats', quantity: 80, unit: 'g' },
+            { name: 'Almond milk', quantity: 250, unit: 'ml' },
+            { name: 'Mixed berries', quantity: 100, unit: 'g' },
+            { name: 'Walnuts', quantity: 20, unit: 'g' },
+            { name: 'Honey', quantity: 1, unit: 'tbsp' },
+            { name: 'Cinnamon', quantity: 1, unit: 'tsp' }
+          ],
+          instructions: [
+            'Bring almond milk to a gentle boil in a medium saucepan over medium heat',
+            'Add oats and reduce heat to low, stirring occasionally for 5-7 minutes until creamy',
+            'While oats cook, rinse berries and roughly chop walnuts',
+            'Remove oats from heat when they reach desired consistency',
+            'Stir in honey and cinnamon until well combined',
+            'Transfer to a bowl and top with fresh berries and chopped walnuts',
+            'Let cool for 1-2 minutes before enjoying'
+          ]
+        },
+        {
+          name: 'Scrambled Eggs with Avocado Toast',
+          calories: 420,
+          protein: 22,
+          carbs: 35,
+          fat: 20,
+          prepTime: 15,
+          ingredients: [
+            { name: 'Eggs', quantity: 3, unit: 'large' },
+            { name: 'Whole grain bread', quantity: 2, unit: 'slices' },
+            { name: 'Avocado', quantity: 100, unit: 'g' },
+            { name: 'Butter', quantity: 1, unit: 'tbsp' },
+            { name: 'Salt', quantity: 0.5, unit: 'tsp' },
+            { name: 'Black pepper', quantity: 0.25, unit: 'tsp' },
+            { name: 'Lime juice', quantity: 1, unit: 'tsp' }
+          ],
+          instructions: [
+            'Toast bread slices until golden brown',
+            'While bread toasts, crack eggs into a bowl and whisk with salt and pepper',
+            'Heat butter in a non-stick pan over medium-low heat',
+            'Pour in eggs and let sit for 20 seconds',
+            'Using a spatula, gently push eggs from edges toward center, creating soft curds',
+            'Continue cooking slowly, stirring every 20-30 seconds until eggs are just set but still creamy',
+            'Meanwhile, mash avocado with lime juice and a pinch of salt',
+            'Spread mashed avocado on toast',
+            'Plate scrambled eggs alongside avocado toast and serve immediately'
+          ]
+        },
+        {
+          name: 'Greek Yogurt Parfait',
+          calories: 300,
+          protein: 15,
+          carbs: 40,
+          fat: 8,
+          prepTime: 5,
+          ingredients: [
+            { name: 'Greek Yogurt', quantity: 150, unit: 'g' },
+            { name: 'Granola', quantity: 30, unit: 'g' },
+            { name: 'Mixed Berries', quantity: 50, unit: 'g' },
+            { name: 'Honey', quantity: 1, unit: 'tbsp' }
+          ],
+          instructions: [
+            'In a glass or bowl, add half the Greek yogurt',
+            'Drizzle with half the honey',
+            'Add half the berries and granola',
+            'Layer remaining yogurt on top',
+            'Finish with remaining berries, granola, and honey',
+            'Enjoy immediately for best texture'
+          ]
+        }
+      ],
+      
+      lunch: [
+        {
+          name: 'Chicken Caesar Salad',
+          calories: 450,
+          protein: 35,
+          carbs: 25,
+          fat: 22,
+          prepTime: 20,
+          ingredients: [
+            { name: 'Chicken breast', quantity: 150, unit: 'g' },
+            { name: 'Romaine lettuce', quantity: 200, unit: 'g' },
+            { name: 'Caesar dressing', quantity: 2, unit: 'tbsp' },
+            { name: 'Parmesan cheese', quantity: 30, unit: 'g' },
+            { name: 'Croutons', quantity: 30, unit: 'g' },
+            { name: 'Olive oil', quantity: 1, unit: 'tbsp' },
+            { name: 'Garlic powder', quantity: 0.5, unit: 'tsp' },
+            { name: 'Black pepper', quantity: 0.25, unit: 'tsp' }
+          ],
+          instructions: [
+            'Season chicken breast with garlic powder, salt, and pepper on both sides',
+            'Heat olive oil in a skillet over medium-high heat',
+            'Cook chicken for 6-7 minutes per side until golden and internal temp reaches 165°F',
+            'Remove chicken and let rest for 5 minutes',
+            'Meanwhile, wash and chop romaine lettuce into bite-sized pieces',
+            'Place lettuce in a large bowl',
+            'Slice chicken into strips',
+            'Add chicken to lettuce along with croutons',
+            'Drizzle with Caesar dressing and toss to combine',
+            'Top with freshly grated Parmesan cheese',
+            'Serve immediately for best texture'
+          ]
+        },
+        {
+          name: 'Mediterranean Quinoa Bowl',
+          calories: 480,
+          protein: 18,
+          carbs: 65,
+          fat: 18,
+          prepTime: 25,
+          ingredients: [
+            { name: 'Quinoa', quantity: 80, unit: 'g' },
+            { name: 'Chickpeas', quantity: 100, unit: 'g' },
+            { name: 'Cherry tomatoes', quantity: 100, unit: 'g' },
+            { name: 'Cucumber', quantity: 100, unit: 'g' },
+            { name: 'Feta cheese', quantity: 40, unit: 'g' },
+            { name: 'Olive oil', quantity: 1, unit: 'tbsp' },
+            { name: 'Lemon juice', quantity: 2, unit: 'tbsp' },
+            { name: 'Fresh parsley', quantity: 10, unit: 'g' }
+          ],
+          instructions: [
+            'Rinse quinoa under cold water until water runs clear',
+            'Bring 160ml water to boil, add quinoa and a pinch of salt',
+            'Reduce heat to low, cover, and simmer for 15 minutes',
+            'Remove from heat and let stand covered for 5 minutes, then fluff with fork',
+            'While quinoa cooks, dice cucumber and halve cherry tomatoes',
+            'Drain and rinse chickpeas if using canned',
+            'Chop parsley finely',
+            'In a small bowl, whisk together olive oil, lemon juice, salt and pepper for dressing',
+            'Combine cooked quinoa, chickpeas, tomatoes, and cucumber in a bowl',
+            'Drizzle with dressing and toss to combine',
+            'Top with crumbled feta cheese and fresh parsley',
+            'Serve warm or at room temperature'
+          ]
+        },
+        {
+          name: 'Turkey Sandwich',
+          calories: 450,
+          protein: 28,
+          carbs: 45,
+          fat: 15,
+          prepTime: 10,
+          ingredients: [
+            { name: 'Turkey Breast', quantity: 100, unit: 'g' },
+            { name: 'Whole Wheat Bread', quantity: 2, unit: 'slice' },
+            { name: 'Lettuce', quantity: 20, unit: 'g' },
+            { name: 'Tomato', quantity: 50, unit: 'g' },
+            { name: 'Mustard', quantity: 1, unit: 'tbsp' },
+            { name: 'Swiss cheese', quantity: 30, unit: 'g' }
+          ],
+          instructions: [
+            'Toast bread slices lightly if desired',
+            'Spread mustard on one slice of bread',
+            'Layer turkey breast on the bread',
+            'Add swiss cheese on top of turkey',
+            'Wash and dry lettuce leaves',
+            'Slice tomato into 1/4 inch thick rounds',
+            'Layer lettuce and tomato on top of cheese',
+            'Top with second slice of bread',
+            'Cut diagonally if desired and serve'
+          ]
+        }
+      ],
+      
+      dinner: [
+        {
+          name: 'Grilled Salmon with Roasted Vegetables',
+          calories: 550,
+          protein: 40,
+          carbs: 35,
+          fat: 25,
+          prepTime: 30,
+          ingredients: [
+            { name: 'Salmon fillet', quantity: 180, unit: 'g' },
+            { name: 'Broccoli', quantity: 150, unit: 'g' },
+            { name: 'Sweet potato', quantity: 150, unit: 'g' },
+            { name: 'Olive oil', quantity: 2, unit: 'tbsp' },
+            { name: 'Lemon', quantity: 1, unit: 'whole' },
+            { name: 'Garlic', quantity: 2, unit: 'cloves' },
+            { name: 'Fresh dill', quantity: 5, unit: 'g' },
+            { name: 'Salt and pepper', quantity: 1, unit: 'tsp' }
+          ],
+          instructions: [
+            'Preheat oven to 425°F (220°C)',
+            'Peel and dice sweet potato into 1-inch cubes',
+            'Cut broccoli into florets',
+            'Toss vegetables with 1 tbsp olive oil, salt, and pepper',
+            'Spread vegetables on a baking sheet and roast for 20 minutes',
+            'Meanwhile, pat salmon dry with paper towels',
+            'Season salmon with salt, pepper, and minced garlic',
+            'Heat remaining olive oil in an oven-safe skillet over medium-high heat',
+            'Place salmon skin-side up and sear for 3-4 minutes until golden',
+            'Flip salmon and transfer skillet to oven',
+            'Bake for 8-10 minutes until salmon flakes easily',
+            'Remove vegetables when tender and slightly caramelized',
+            'Squeeze fresh lemon over salmon and vegetables',
+            'Garnish with fresh dill and serve immediately'
+          ]
+        },
+        {
+          name: 'Beef Stir-Fry with Brown Rice',
+          calories: 520,
+          protein: 35,
+          carbs: 55,
+          fat: 18,
+          prepTime: 35,
+          ingredients: [
+            { name: 'Lean beef strips', quantity: 150, unit: 'g' },
+            { name: 'Brown rice', quantity: 80, unit: 'g' },
+            { name: 'Mixed stir-fry vegetables', quantity: 200, unit: 'g' },
+            { name: 'Soy sauce', quantity: 2, unit: 'tbsp' },
+            { name: 'Sesame oil', quantity: 1, unit: 'tbsp' },
+            { name: 'Ginger', quantity: 1, unit: 'tsp' },
+            { name: 'Garlic', quantity: 2, unit: 'cloves' },
+            { name: 'Cornstarch', quantity: 1, unit: 'tsp' }
+          ],
+          instructions: [
+            'Cook brown rice according to package directions (typically 25-30 minutes)',
+            'While rice cooks, slice beef against the grain into thin strips',
+            'Toss beef with cornstarch and a pinch of salt',
+            'Mince garlic and grate fresh ginger',
+            'Heat wok or large skillet over high heat',
+            'Add half the sesame oil and swirl to coat',
+            'Add beef in a single layer and let sear for 1 minute without stirring',
+            'Stir-fry beef for another 2 minutes until browned, then remove from pan',
+            'Add remaining oil to pan with garlic and ginger, stir for 30 seconds',
+            'Add vegetables and stir-fry for 3-4 minutes until crisp-tender',
+            'Return beef to pan with soy sauce',
+            'Toss everything together for 1 minute',
+            'Serve over brown rice immediately'
+          ]
+        },
+        {
+          name: 'Chicken Stir-Fry',
+          calories: 520,
+          protein: 38,
+          carbs: 50,
+          fat: 18,
+          prepTime: 25,
+          ingredients: [
+            { name: 'Chicken Breast', quantity: 150, unit: 'g' },
+            { name: 'Mixed Stir-Fry Vegetables', quantity: 200, unit: 'g' },
+            { name: 'Rice', quantity: 100, unit: 'g' },
+            { name: 'Soy Sauce', quantity: 2, unit: 'tbsp' },
+            { name: 'Sesame Oil', quantity: 1, unit: 'tsp' },
+            { name: 'Ginger', quantity: 1, unit: 'tsp' },
+            { name: 'Garlic', quantity: 2, unit: 'cloves' }
+          ],
+          instructions: [
+            'Cook rice according to package directions',
+            'Cut chicken into bite-sized pieces',
+            'Mince garlic and ginger',
+            'Heat sesame oil in a wok or large skillet over high heat',
+            'Add chicken and stir-fry for 3-4 minutes until golden',
+            'Add garlic and ginger, stir for 30 seconds',
+            'Add vegetables and stir-fry for 3-4 minutes',
+            'Add soy sauce and toss everything together',
+            'Cook for another minute until sauce coats everything',
+            'Serve immediately over rice'
+          ]
+        }
+      ],
+      
+      snack: [
+        {
+          name: 'Greek Yogurt Parfait',
+          calories: 180,
+          protein: 15,
+          carbs: 20,
+          fat: 5,
+          prepTime: 5,
+          ingredients: [
+            { name: 'Greek yogurt', quantity: 150, unit: 'g' },
+            { name: 'Granola', quantity: 20, unit: 'g' },
+            { name: 'Mixed berries', quantity: 50, unit: 'g' },
+            { name: 'Honey', quantity: 1, unit: 'tsp' }
+          ],
+          instructions: [
+            'In a glass or bowl, add half the Greek yogurt',
+            'Drizzle with half the honey',
+            'Add half the berries and granola',
+            'Layer remaining yogurt on top',
+            'Finish with remaining berries, granola, and honey',
+            'Enjoy immediately for best texture'
+          ]
+        },
+        {
+          name: 'Hummus with Veggie Sticks',
+          calories: 150,
+          protein: 6,
+          carbs: 18,
+          fat: 7,
+          prepTime: 10,
+          ingredients: [
+            { name: 'Hummus', quantity: 80, unit: 'g' },
+            { name: 'Carrot sticks', quantity: 80, unit: 'g' },
+            { name: 'Cucumber sticks', quantity: 60, unit: 'g' },
+            { name: 'Bell pepper strips', quantity: 60, unit: 'g' }
+          ],
+          instructions: [
+            'Peel carrots and cut into 3-inch sticks',
+            'Slice cucumber into similar-sized sticks',
+            'Remove seeds from bell pepper and cut into strips',
+            'Arrange vegetables on a plate',
+            'Place hummus in a small bowl in the center',
+            'Optional: drizzle hummus with olive oil and sprinkle with paprika',
+            'Serve immediately or store vegetables in water to keep crisp'
+          ]
+        },
+        {
+          name: 'Apple with Almond Butter',
+          calories: 200,
+          protein: 5,
+          carbs: 25,
+          fat: 10,
+          prepTime: 3,
+          ingredients: [
+            { name: 'Apple', quantity: 1, unit: 'medium' },
+            { name: 'Almond Butter', quantity: 1, unit: 'tbsp' }
+          ],
+          instructions: [
+            'Wash and core the apple',
+            'Cut apple into 8 wedges',
+            'Arrange on a plate',
+            'Place almond butter in a small bowl for dipping',
+            'Or spread almond butter directly on apple slices',
+            'Enjoy immediately to prevent browning'
+          ]
+        }
+      ]
+    };
   }
 
   // Main entry point for meal plan generation
@@ -319,37 +661,72 @@ Return as JSON.`;
   }
 
   // Helper: Get default meal structure
-  getDefaultMealStructure(strategy) {
-    const totalCalories = strategy.calorieTarget || 2000;
-    const mealCount = strategy.mealFrequency || 3;
-
-    const structure = {
-      mealStructure: {},
-      timing: {}
-    };
-
-    if (mealCount === 3) {
-      structure.mealStructure = {
-        breakfast: { calories: Math.round(totalCalories * 0.25), type: 'balanced' },
-        lunch: { calories: Math.round(totalCalories * 0.35), type: 'balanced' },
-        dinner: { calories: Math.round(totalCalories * 0.40), type: 'hearty' }
-      };
-      structure.timing = {
-        breakfast: '08:00',
-        lunch: '12:30',
-        dinner: '19:00'
-      };
-    } else if (mealCount === 5) {
-      structure.mealStructure = {
-        breakfast: { calories: Math.round(totalCalories * 0.20), type: 'light' },
-        snack1: { calories: Math.round(totalCalories * 0.10), type: 'fruit' },
-        lunch: { calories: Math.round(totalCalories * 0.30), type: 'balanced' },
-        snack2: { calories: Math.round(totalCalories * 0.10), type: 'protein' },
-        dinner: { calories: Math.round(totalCalories * 0.30), type: 'hearty' }
+  // Helper: Get default meal
+  getDefaultMeal(mealType, targetCalories) {
+    // Check if getDetailedMealTemplates exists and use it
+    if (this.getDetailedMealTemplates) {
+      const templates = this.getDetailedMealTemplates();
+      const mealTemplates = templates[mealType] || templates.lunch;
+      const template = mealTemplates[0]; // Use first template as default
+      
+      return {
+        type: mealType,
+        name: template.name,
+        nutrition: {
+          calories: template.calories || targetCalories || 400,
+          protein: template.protein || Math.round(targetCalories * 0.25 / 4),
+          carbs: template.carbs || Math.round(targetCalories * 0.45 / 4),
+          fat: template.fat || Math.round(targetCalories * 0.30 / 9),
+          fiber: 5,
+          sodium: 300,
+          sugar: 10
+        },
+        prepTime: template.prepTime || 20,
+        customRecipe: {
+          name: template.name,
+          ingredients: template.ingredients,
+          instructions: template.instructions,
+          cookingTime: template.prepTime || 20
+        },
+        servings: 1,
+        alternatives: [],
+        isCustom: false
       };
     }
-
-    return structure;
+    
+    // Fallback to basic template if method doesn't exist
+    return {
+      type: mealType,
+      name: `${mealType.charAt(0).toUpperCase() + mealType.slice(1)} Meal`,
+      nutrition: {
+        calories: targetCalories || 400,
+        protein: Math.round(targetCalories * 0.25 / 4),
+        carbs: Math.round(targetCalories * 0.45 / 4),
+        fat: Math.round(targetCalories * 0.30 / 9),
+        fiber: 5,
+        sodium: 300,
+        sugar: 10
+      },
+      customRecipe: {
+        name: `${mealType.charAt(0).toUpperCase() + mealType.slice(1)} Meal`,
+        ingredients: [
+          { name: 'Main protein', quantity: 150, unit: 'g' },
+          { name: 'Vegetables', quantity: 200, unit: 'g' },
+          { name: 'Whole grain', quantity: 100, unit: 'g' }
+        ],
+        instructions: [
+          'Prepare all ingredients',
+          'Cook protein source',
+          'Prepare vegetables',
+          'Cook grains if needed',
+          'Combine and season to taste'
+        ],
+        cookingTime: 25
+      },
+      alternatives: [],
+      isCustom: false,
+      servings: 1
+    };
   }
 
   // Generate basic meals without AI - WITH INGREDIENTS - FIXED
@@ -699,139 +1076,95 @@ Return as JSON.`;
   }
 
   // Fallback plan generation - COMPLETELY FIXED
-  async generateFallbackPlan(userId, planRequest) {
+   async generateFallbackPlan(userId, planRequest) {
     try {
       const preferences = await UserPreferences.findOne({ userId });
-      const healthProfile = await HealthProfile.findOne({ userId });
+      const templates = this.getDetailedMealTemplates();
+      const duration = planRequest.duration || 'daily';
+      const numDays = duration === 'weekly' ? 7 : 1;
       
-      // Fix: Ensure planRequest has all required fields
-      if (!planRequest) {
-        planRequest = {};
-      }
-      
-      // Ensure userId is set
-      planRequest.userId = userId;
-      
-      // Fix duration/type field
-      if (!planRequest.duration && !planRequest.type) {
-        planRequest.duration = 'daily';
-      } else if (planRequest.type && !planRequest.duration) {
-        planRequest.duration = planRequest.type;
-      }
-      
-      // Fix: Ensure valid startDate
-      let startDate;
-      if (planRequest.startDate instanceof Date && !isNaN(planRequest.startDate.getTime())) {
-        startDate = planRequest.startDate;
-      } else if (typeof planRequest.startDate === 'string') {
-        startDate = new Date(planRequest.startDate);
-        if (isNaN(startDate.getTime())) {
-          startDate = new Date();
-        }
-      } else {
-        startDate = new Date();
-      }
-      planRequest.startDate = startDate;
-      
-      console.log('Generating fallback plan with:', {
-        userId,
-        startDate: startDate.toISOString(),
-        duration: planRequest.duration
-      });
-      
-      // Get default strategy
-      const strategy = this.getDefaultStrategy(healthProfile, preferences);
-      
-      // Get default structure
-      const structure = this.getDefaultMealStructure(strategy);
-      
-      // Generate basic meals with ingredients
-      const detailedMeals = this.generateBasicMeals(structure, preferences, planRequest);
-      
-      // Format the plan with proper error handling
-      const formattedPlan = await this.formatMealPlan(
-        detailedMeals,
-        planRequest,
-        {
-          method: 'fallback',
-          preferences: preferences?.toObject ? preferences.toObject() : {},
-          healthProfile: healthProfile?.toObject ? healthProfile.toObject() : {},
-          generatedAt: new Date()
-        }
-      );
-      
-      // Final validation before returning
-      if (!formattedPlan.type) {
-        formattedPlan.type = planRequest.duration || 'daily';
-      }
-      
-      if (!formattedPlan.startDate || isNaN(new Date(formattedPlan.startDate).getTime())) {
-        formattedPlan.startDate = new Date();
-      }
-      
-      if (!formattedPlan.endDate || isNaN(new Date(formattedPlan.endDate).getTime())) {
-        formattedPlan.endDate = new Date(formattedPlan.startDate);
-        if (formattedPlan.type === 'weekly') {
-          formattedPlan.endDate.setDate(formattedPlan.endDate.getDate() + 6);
-        }
-      }
-      
-      return formattedPlan;
-    } catch (error) {
-      console.error('Error in generateFallbackPlan:', error);
-      
-      // Ultimate fallback - return minimal valid plan
-      const now = new Date();
-      const endDate = new Date(now);
-      if (planRequest?.duration === 'weekly' || planRequest?.type === 'weekly') {
+      const startDate = planRequest.startDate || new Date();
+      const endDate = new Date(startDate);
+      if (duration === 'weekly') {
         endDate.setDate(endDate.getDate() + 6);
       }
       
-      return {
-        userId: userId,
-        type: planRequest?.duration || planRequest?.type || 'daily',
-        name: `Meal Plan - ${now.toISOString().split('T')[0]}`,
-        startDate: now,
-        endDate: endDate,
-        dailyPlans: [{
-          date: now,
-          meals: [{
-            type: 'breakfast',
-            name: 'Default Breakfast',
+      const dailyPlans = [];
+      
+      for (let day = 0; day < numDays; day++) {
+        const currentDate = new Date(startDate);
+        currentDate.setDate(currentDate.getDate() + day);
+        
+        const meals = [];
+        const mealTypes = ['breakfast', 'lunch', 'dinner', 'snack'];
+        
+        for (const mealType of mealTypes) {
+          const mealTemplateArray = templates[mealType];
+          const template = mealTemplateArray[day % mealTemplateArray.length];
+          
+          meals.push({
+            type: mealType,
+            name: template.name,
             nutrition: {
-              calories: 350,
-              protein: 15,
-              carbs: 50,
-              fat: 10,
+              calories: template.calories,
+              protein: template.protein,
+              carbs: template.carbs,
+              fat: template.fat,
               fiber: 5,
-              sodium: 200,
+              sodium: 300,
               sugar: 10
             },
+            prepTime: template.prepTime,
             servings: 1,
+            customRecipe: {
+              name: template.name,
+              ingredients: template.ingredients,
+              instructions: template.instructions,
+              cookingTime: template.prepTime
+            },
             alternatives: [],
-            order: 0,
+            order: mealTypes.indexOf(mealType),
             isLocked: false,
-            isCustom: false,
-            customRecipe: null
-          }],
-          notes: 'Default meal plan',
-          totals: {
-            calories: 350,
-            protein: 15,
-            carbs: 50,
-            fat: 10,
-            fiber: 5,
-            sodium: 200,
-            sugar: 10
-          }
-        }],
+            isCustom: false
+          });
+        }
+        
+        const totals = meals.reduce((acc, meal) => ({
+          calories: acc.calories + meal.nutrition.calories,
+          protein: acc.protein + meal.nutrition.protein,
+          carbs: acc.carbs + meal.nutrition.carbs,
+          fat: acc.fat + meal.nutrition.fat,
+          fiber: acc.fiber + (meal.nutrition.fiber || 0),
+          sodium: acc.sodium + (meal.nutrition.sodium || 0),
+          sugar: acc.sugar + (meal.nutrition.sugar || 0)
+        }), { calories: 0, protein: 0, carbs: 0, fat: 0, fiber: 0, sodium: 0, sugar: 0 });
+        
+        dailyPlans.push({
+          date: currentDate,
+          meals: meals,
+          totals: totals,
+          notes: `Day ${day + 1} meal plan`
+        });
+      }
+      
+      
+      return {
+        userId: userId,
+        type: duration,
+        name: `Meal Plan - ${startDate.toISOString().split('T')[0]}`,
+        startDate: startDate,
+        endDate: endDate,
+        dailyPlans: dailyPlans,
         generationMetadata: {
-          method: 'ultimate-fallback',
-          error: 'Failed to generate proper meal plan',
-          generatedAt: now
+          method: 'enhanced-fallback',
+          generatedAt: new Date()
         },
         status: 'active'
       };
+    } catch (error) {
+      console.error('Enhanced fallback generation error:', error);
+      // Return basic structure if all else fails
+      return this.getBasicFallbackPlan(userId, planRequest);
     }
   }
 
@@ -849,34 +1182,34 @@ Return as JSON.`;
 
   // Helper: Get default meal
   getDefaultMeal(mealType, targetCalories) {
-    return {
-      type: mealType,
-      name: `${mealType.charAt(0).toUpperCase() + mealType.slice(1)} Meal`,
-      nutrition: {
-        calories: targetCalories || 400,
-        protein: Math.round(targetCalories * 0.25 / 4),
-        carbs: Math.round(targetCalories * 0.45 / 4),
-        fat: Math.round(targetCalories * 0.30 / 9),
-        fiber: 5,
-        sodium: 300,
-        sugar: 10
-      },
-      ingredients: [
-        { name: 'Main protein', quantity: 150, unit: 'g' },
-        { name: 'Vegetables', quantity: 200, unit: 'g' },
-        { name: 'Whole grain', quantity: 100, unit: 'g' }
-      ],
-      instructions: [
-        'Prepare all ingredients',
-        'Cook protein source',
-        'Prepare vegetables',
-        'Cook grains if needed',
-        'Combine and season to taste'
-      ],
-      cookingTime: 25,
-      alternatives: []
-    };
-  }
+  const templates = this.getDetailedMealTemplates();
+  const mealTemplates = templates[mealType] || templates.lunch;
+  const template = mealTemplates[0]; // Use first template as default
+  
+  return {
+    type: mealType,
+    name: template.name,
+    nutrition: {
+      calories: template.calories || targetCalories || 400,
+      protein: template.protein || Math.round(targetCalories * 0.25 / 4),
+      carbs: template.carbs || Math.round(targetCalories * 0.45 / 4),
+      fat: template.fat || Math.round(targetCalories * 0.30 / 9),
+      fiber: 5,
+      sodium: 300,
+      sugar: 10
+    },
+    prepTime: template.prepTime || 20,
+    customRecipe: {
+      name: template.name,
+      ingredients: template.ingredients,
+      instructions: template.instructions,
+      cookingTime: template.prepTime || 20
+    },
+    servings: 1,
+    alternatives: [],
+    isCustom: false
+  };
+}
 
   // Helper: Get relevant recipes from database
   async getRelevantRecipes(preferences) {
