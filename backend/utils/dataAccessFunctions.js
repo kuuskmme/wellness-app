@@ -259,6 +259,10 @@ const functionImplementations = {
           
           // Get relevant day(s) based on timeframe
           if (timeframe === 'today') {
+            console.log('Meal plan found:', mealPlan._id);
+  console.log('Daily plans:', mealPlan.dailyPlans);
+  console.log('First day:', mealPlan.dailyPlans?.[0]);
+  console.log('First day meals:', mealPlan.dailyPlans?.[0]?.meals);
             const today = new Date().getDay();
             response.data = mealPlan.dailyPlans?.[0];
           } else if (timeframe === 'week') {

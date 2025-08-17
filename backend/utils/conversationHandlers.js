@@ -448,12 +448,14 @@ class ConversationHandlers {
       }
       
       const data = mealPlanResult.data;
+      console.log('Handler received data:', JSON.stringify(data, null, 2));
       const userName = context.userProfile?.name || 'there';
       let response = `${userName}, here's your ${timeframe === 'week' ? 'weekly' : "today's"} meal plan:\n\n`;
       
       if (timeframe === 'today') {
         // Today's meal plan
-        const today = data.meals || data.todayMeals || [];
+        const today = data?.data?.meals || data?.meals || [];
+console.log('Today meals array:', today);  // ADD THIS
         
         response += `**🍽️ Today's Meals:**\n\n`;
         
