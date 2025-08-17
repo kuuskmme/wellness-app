@@ -492,25 +492,33 @@ static async handleHealthMetrics(userId, query, context) {
   }
 
   /**
-   * 3. MEAL PLAN HANDLER
-   * Handles: Daily/weekly meal plans, meal suggestions
-   * Interprets: Nutritional balance, variety, preferences
-   */
-  static async handleMealPlans(userId, query, context) {
+ * 3. MEAL PLAN HANDLER
+ * Handles: Daily/weekly meal plans, meal suggestions, specific meal queries, nutrients
+ * Interprets: Nutritional balance, variety, preferences, specific meal nutrients
+ */
+static async handleMealPlans(userId, query, context) {
   try {
-    // Check if asking about preparation/cooking instructions
     const lowerQuery = query.toLowerCase();
+    
+    // Check if asking about specific meal's nutrients
+    const nutrientKeywords = ['nutrient', 'nutrition', 'calorie', 'protein', 'carb', 'fat', 'macro'];
+    const isNutrientQuery = nutrientKeywords.some(keyword => lowerQuery.includes(keyword));
+    
+    // Detect specific meal being asked about
+    let specificMeal = null;
+    const mealTypes = ['breakfast', 'lunch', 'dinner', 'snack'];
+    for (const meal of mealTypes) {
+      if (lowerQuery.includes(meal)) {
+        specificMeal = meal;
+        break;
+      }
+    }
+    
+    // Check if asking about preparation/cooking instructions
     const isPrepareQuery = lowerQuery.includes('prepare') || 
                           lowerQuery.includes('cook') || 
                           lowerQuery.includes('make') ||
                           lowerQuery.includes('recipe for');
-    
-    // Determine which meal they're asking about
-    let mealType = null;
-    if (lowerQuery.includes('breakfast')) mealType = 'breakfast';
-    else if (lowerQuery.includes('lunch')) mealType = 'lunch';
-    else if (lowerQuery.includes('dinner') || lowerQuery.includes('tonight')) mealType = 'dinner';
-    else if (lowerQuery.includes('snack')) mealType = 'snack';
     
     // Get today's meal plan
     const mealPlanResult = await executeFunction('get_nutrition_data', userId, {
@@ -528,21 +536,145 @@ static async handleHealthMetrics(userId, query, context) {
     const todayPlan = mealPlanResult.data.data;
     const userName = context.userProfile?.name || 'there';
     
-    // Handle preparation/recipe instructions
-    if (isPrepareQuery && mealType) {
+    // HANDLE SPECIFIC MEAL NUTRIENT QUERIES
+    if (isNutrientQuery && specificMeal) {
       const meal = todayPlan.meals?.find(m => 
-        m.type.toLowerCase() === mealType
+        m.type.toLowerCase() === specificMeal
+      );
+      
+      if (!meal) {
+        return {
+          response: `I don't see ${specificMeal} in your meal plan for today. Would you like me to show your full meal plan?`,
+          functionCalls: [{
+            name: 'get_nutrition_data',
+            parameters: { type: 'meal_plan', timeframe: 'today' },
+            result: mealPlanResult
+          }]
+        };
+      }
+      
+      let response = `${userName}, here are the nutrients in your ${meal.name} ${specificMeal}:\n\n`;
+      
+      const mealEmojis = {
+        breakfast: '🌅',
+        lunch: '☀️',
+        dinner: '🌙',
+        snack: '🍎'
+      };
+      
+      response += `**${mealEmojis[specificMeal]} ${specificMeal.charAt(0).toUpperCase() + specificMeal.slice(1)} Nutrition Breakdown:**\n\n`;
+      
+      // Macronutrients
+      response += `**Macronutrients:**\n`;
+      response += `• Calories: ${meal.nutrition?.calories || 0} kcal\n`;
+      
+      const protein = meal.nutrition?.protein || 0;
+      const carbs = meal.nutrition?.carbs || 0;
+      const fat = meal.nutrition?.fat || 0;
+      
+      // Calculate percentages of daily values (based on 2000 cal diet)
+      const dailyProteinTarget = 50; // grams
+      const dailyCarbsTarget = 300; // grams
+      const dailyFatTarget = 65; // grams
+      
+      response += `• Protein: ${protein}g (${Math.round(protein/dailyProteinTarget * 100)}% of daily needs)\n`;
+      response += `• Carbohydrates: ${carbs}g (${Math.round(carbs/dailyCarbsTarget * 100)}% of daily needs)\n`;
+      response += `• Fat: ${fat}g (${Math.round(fat/dailyFatTarget * 100)}% of daily needs)\n`;
+      
+      // Additional nutrients if available
+      if (meal.nutrition?.fiber) {
+        response += `• Fiber: ${meal.nutrition.fiber}g\n`;
+      }
+      if (meal.nutrition?.sugar) {
+        response += `• Sugar: ${meal.nutrition.sugar}g\n`;
+      }
+      if (meal.nutrition?.sodium) {
+        response += `• Sodium: ${meal.nutrition.sodium}mg\n`;
+      }
+      
+      // Key ingredients if available
+      if (meal.customRecipe?.ingredients && meal.customRecipe.ingredients.length > 0) {
+        response += `\n**Key Ingredients:**\n`;
+        meal.customRecipe.ingredients.slice(0, 5).forEach(ing => {
+          if (typeof ing === 'object' && ing.name) {
+            response += `• ${ing.quantity || ''} ${ing.unit || ''} ${ing.name}`.trim() + '\n';
+          } else if (typeof ing === 'string') {
+            response += `• ${ing}\n`;
+          }
+        });
+      }
+      
+      // Nutritional benefits based on meal type and nutrients
+      response += `\n**Nutritional Benefits:**\n`;
+      
+      if (specificMeal === 'breakfast') {
+        if (carbs > 40) {
+          response += `✅ Good energy source to start your day\n`;
+        }
+        if (protein > 10) {
+          response += `✅ Adequate protein for morning satiety\n`;
+        }
+        if (meal.nutrition?.fiber > 3) {
+          response += `✅ High fiber for digestive health\n`;
+        }
+      } else if (specificMeal === 'lunch') {
+        if (protein > 25) {
+          response += `✅ Excellent protein for sustained energy\n`;
+        }
+        if (carbs < 40 && fat < 20) {
+          response += `✅ Light and balanced for afternoon productivity\n`;
+        }
+      } else if (specificMeal === 'dinner') {
+        if (protein > 30) {
+          response += `✅ High protein for overnight muscle recovery\n`;
+        }
+        if (meal.name.toLowerCase().includes('vegetable')) {
+          response += `✅ Rich in vitamins and minerals\n`;
+        }
+      } else if (specificMeal === 'snack') {
+        if (calories < 200) {
+          response += `✅ Calorie-controlled for healthy snacking\n`;
+        }
+        if (protein > 10) {
+          response += `✅ Protein-rich to curb hunger\n`;
+        }
+      }
+      
+      // Percentage of daily calories
+      const dailyCalorieTarget = context.userProfile?.calorieTarget || 2000;
+      const percentOfDaily = Math.round((meal.nutrition?.calories / dailyCalorieTarget) * 100);
+      response += `\n**Daily Impact:**\n`;
+      response += `This ${specificMeal} provides ${percentOfDaily}% of your ${dailyCalorieTarget} calorie target.\n`;
+      
+      // Add suggestion to see full meal plan or preparation
+      response += `\n💡 **Tips:**\n`;
+      response += `• Ask "How do I prepare this ${specificMeal}?" for cooking instructions\n`;
+      response += `• Say "Show my full meal plan" to see all meals for today\n`;
+      
+      return {
+        response,
+        functionCalls: [{
+          name: 'get_nutrition_data',
+          parameters: { type: 'meal_plan', timeframe: 'today' },
+          result: mealPlanResult
+        }]
+      };
+    }
+    
+    // HANDLE PREPARATION/RECIPE INSTRUCTIONS (existing code)
+    if (isPrepareQuery && specificMeal) {
+      const meal = todayPlan.meals?.find(m => 
+        m.type.toLowerCase() === specificMeal
       );
       
       if (meal && meal.customRecipe && meal.customRecipe.instructions) {
-        let response = `${userName}, here's how to prepare ${meal.name} for ${mealType}:\n\n`;
+        let response = `${userName}, here's how to prepare ${meal.name} for ${specificMeal}:\n\n`;
         response += `**📍 ${meal.name}**\n\n`;
         
         // Add ingredients if available
         if (meal.customRecipe.ingredients && meal.customRecipe.ingredients.length > 0) {
           response += `**🛒 Ingredients:**\n`;
           meal.customRecipe.ingredients.forEach(ing => {
-            // Handle both object and string formats
             if (typeof ing === 'object' && ing.name) {
               response += `• ${ing.quantity || ''} ${ing.unit || ''} ${ing.name}`.trim() + '\n';
             } else if (typeof ing === 'string') {
@@ -559,7 +691,6 @@ static async handleHealthMetrics(userId, query, context) {
             response += `${index + 1}. ${step}\n`;
           });
         } else if (typeof meal.customRecipe.instructions === 'string') {
-          // Handle single string instructions
           response += `${meal.customRecipe.instructions}\n`;
         }
         
@@ -587,7 +718,8 @@ static async handleHealthMetrics(userId, query, context) {
       }
     }
     
-    // Regular meal plan display (daily or weekly)
+    // REGULAR MEAL PLAN DISPLAY (existing code continues...)
+    // Determine timeframe
     const isWeekly = lowerQuery.includes('week');
     const timeframe = isWeekly ? 'week' : 'today';
     
@@ -629,7 +761,7 @@ static async handleHealthMetrics(userId, query, context) {
             response += `Ingredients: ${meal.ingredients.slice(0, 5).join(', ')}\n`;
           }
           
-          // FIX 1: Use meal.nutrition?.calories instead of meal.calories
+          // Use meal.nutrition?.calories instead of meal.calories
           if (meal.nutrition) {
             response += `📊 ${meal.nutrition.calories || 0} cal | `;
             response += `${meal.nutrition.protein || 0}g protein | `;
@@ -650,7 +782,7 @@ static async handleHealthMetrics(userId, query, context) {
         response += `**📈 Daily Nutrition Summary:**\n`;
         response += `• Total Calories: ${data.nutritionSummary.calories}\n`;
         
-        // FIX 3: Don't add 'g' as it's already in the data
+        // Don't add 'g' as it's already in the data
         response += `• Protein: ${data.nutritionSummary.protein}\n`;
         response += `• Carbs: ${data.nutritionSummary.carbs}\n`;
         response += `• Fat: ${data.nutritionSummary.fat}\n`;
@@ -675,7 +807,7 @@ static async handleHealthMetrics(userId, query, context) {
       }
       
     } else {
-      // Weekly view
+      // Weekly view (existing code...)
       response += `${userName}, here's your meal plan for this week:\n\n`;
       
       const days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
@@ -687,7 +819,6 @@ static async handleHealthMetrics(userId, query, context) {
           
           dayPlan.meals?.forEach(meal => {
             response += `• ${meal.type}: ${meal.name}`;
-            // FIX 1: Use meal.nutrition?.calories instead of meal.calories
             if (meal.nutrition?.calories) {
               response += ` (${meal.nutrition.calories} cal)`;
             }
@@ -702,7 +833,7 @@ static async handleHealthMetrics(userId, query, context) {
     }
     
     // Add helpful tip about preparation
-    if (!isPrepareQuery) {
+    if (!isPrepareQuery && !isNutrientQuery) {
       response += `\n💡 **Tip:** Ask me "How do I prepare [meal name]?" for detailed cooking instructions!`;
     }
     
