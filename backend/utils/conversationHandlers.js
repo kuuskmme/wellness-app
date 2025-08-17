@@ -758,139 +758,361 @@ class ConversationHandlers {
    * Interprets: Deficiencies, excesses, balance recommendations
    */
   static async handleNutritionAnalysis(userId, query, context) {
-    try {
-      // Get today's meal plan for analysis
-      const mealPlanResult = await executeFunction('get_nutrition_data', userId, {
-        type: 'meal_plan',
-        timeframe: 'today'
-      });
-      
-      // Get user's nutritional targets
-      const prefsResult = await executeFunction('get_nutrition_data', userId, {
-        type: 'preferences'
-      });
-      
-      if (!mealPlanResult.data) {
-        return {
-          response: "I need an active meal plan to analyze your nutrition. Would you like to create one?",
-          functionCalls: []
-        };
-      }
-      
-      const nutritionSummary = mealPlanResult.data.nutritionSummary;
-      const preferences = prefsResult.data?.data || {};
-      const userName = context.userProfile?.name || 'there';
-      
-      let response = `${userName}, here's your nutritional analysis:\n\n`;
-      
-      // Calorie analysis
-      response += `**🔥 Calorie Analysis:**\n`;
-      const calories = nutritionSummary?.calories || 0;
-      const target = preferences.calorieTarget || 2000;
-      const calorieDiff = calories - target;
-      const caloriePercent = Math.round((calories / target) * 100);
-      
-      response += `• Consumed: ${calories} kcal\n`;
-      response += `• Target: ${target} kcal\n`;
-      response += `• ${caloriePercent}% of daily goal\n`;
-      
-      // Visual representation
-      response += `\n${this.createProgressBar(caloriePercent)}\n\n`;
-      
-      if (Math.abs(calorieDiff) < 100) {
-        response += `✅ Excellent! You're right on target!\n`;
-      } else if (calorieDiff > 200) {
-        response += `⚠️ You're ${calorieDiff} calories over. Consider reducing portion sizes.\n`;
-      } else if (calorieDiff < -200) {
-        response += `📝 You're ${Math.abs(calorieDiff)} calories under. Make sure you're eating enough!\n`;
-      }
-      
-      // Macro breakdown
-      response += `\n**🥗 Macronutrient Breakdown:**\n`;
-      
-      const protein = nutritionSummary?.protein || 0;
-      const carbs = nutritionSummary?.carbs || 0;
-      const fat = nutritionSummary?.fat || 0;
-      const totalMacros = protein + carbs + fat;
-      
-      if (totalMacros > 0) {
-        const proteinPercent = Math.round((protein * 4 / calories) * 100) || 0;
-        const carbsPercent = Math.round((carbs * 4 / calories) * 100) || 0;
-        const fatPercent = Math.round((fat * 9 / calories) * 100) || 0;
-        
-        response += `• Protein: ${protein}g (${proteinPercent}% of calories)\n`;
-        response += `• Carbs: ${carbs}g (${carbsPercent}% of calories)\n`;
-        response += `• Fat: ${fat}g (${fatPercent}% of calories)\n`;
-        
-        // Ideal macro ratios feedback
-        response += `\n**📊 Balance Assessment:**\n`;
-        
-        if (proteinPercent < 15) {
-          response += `• Consider increasing protein intake for muscle maintenance\n`;
-        } else if (proteinPercent > 35) {
-          response += `• Protein intake is quite high - ensure balanced nutrition\n`;
-        } else {
-          response += `• ✅ Protein intake is well-balanced\n`;
-        }
-        
-        if (carbsPercent < 45) {
-          response += `• Carb intake is low - may affect energy levels\n`;
-        } else if (carbsPercent > 65) {
-          response += `• High carb intake - consider more protein and healthy fats\n`;
-        } else {
-          response += `• ✅ Carbohydrate intake is appropriate\n`;
-        }
-        
-        if (fatPercent < 20) {
-          response += `• Fat intake is low - include healthy fats for hormone health\n`;
-        } else if (fatPercent > 35) {
-          response += `• Fat intake is high - monitor saturated fat sources\n`;
-        } else {
-          response += `• ✅ Fat intake is within healthy range\n`;
-        }
-      }
-      
-      // Micronutrients if available
-      if (nutritionSummary?.fiber) {
-        response += `\n**🌾 Fiber:** ${nutritionSummary.fiber}g`;
-        if (nutritionSummary.fiber < 25) {
-          response += ` (Consider adding more vegetables and whole grains)`;
-        } else {
-          response += ` (Great fiber intake!)`;
-        }
-        response += '\n';
-      }
-      
-      // Personalized recommendations
-      response += `\n**💡 Recommendations:**\n`;
-      response += `1. Stay hydrated - aim for 8 glasses of water daily\n`;
-      response += `2. Include a variety of colorful vegetables\n`;
-      response += `3. Balance each meal with protein, carbs, and healthy fats\n`;
-      
+  try {
+    const lowerQuery = query.toLowerCase();
+    
+    // Determine timeframe - check for weekly analysis
+    const isWeekly = lowerQuery.includes('week') || lowerQuery.includes('weekly');
+    const timeframe = isWeekly ? 'week' : 'today';
+    
+    // Get meal plan data for analysis
+    const mealPlanResult = await executeFunction('get_nutrition_data', userId, {
+      type: 'meal_plan',
+      timeframe: timeframe
+    });
+    
+    // Get user's nutritional targets
+    const prefsResult = await executeFunction('get_nutrition_data', userId, {
+      type: 'preferences'
+    });
+    
+    if (!mealPlanResult.data) {
       return {
-        response,
-        functionCalls: [
-          {
-            name: 'get_nutrition_data',
-            parameters: { type: 'meal_plan', timeframe: 'today' },
-            result: mealPlanResult
-          },
-          {
-            name: 'get_nutrition_data',
-            parameters: { type: 'preferences' },
-            result: prefsResult
-          }
-        ]
-      };
-      
-    } catch (error) {
-      console.error('Nutrition analysis handler error:', error);
-      return {
-        response: "I'm having trouble analyzing your nutrition. Please try again.",
+        response: "I need an active meal plan to analyze your nutrition. Would you like to create one?",
         functionCalls: []
       };
     }
+    
+    const preferences = prefsResult.data?.data || {};
+    const userName = context.userProfile?.name || 'there';
+    
+    // Check if specifically asking about protein
+    const isProteinQuery = lowerQuery.includes('protein');
+    
+    if (isWeekly) {
+      // Weekly analysis
+      return this.handleWeeklyNutritionAnalysis(
+        mealPlanResult.data, 
+        preferences, 
+        userName, 
+        isProteinQuery
+      );
+    }
+    
+    // Daily analysis
+    const nutritionSummary = mealPlanResult.data.nutritionSummary;
+    
+    // Parse nutrition values - handle both "85g" and 85 formats
+    const parseNutritionValue = (value) => {
+      if (typeof value === 'number') return value;
+      if (typeof value === 'string') {
+        // Remove 'g' or any other units and parse
+        return parseInt(value.replace(/[^0-9]/g, '')) || 0;
+      }
+      return 0;
+    };
+    
+    const calories = nutritionSummary?.calories || 0;
+    const protein = parseNutritionValue(nutritionSummary?.protein);
+    const carbs = parseNutritionValue(nutritionSummary?.carbs);
+    const fat = parseNutritionValue(nutritionSummary?.fat);
+    
+    // If asking specifically about protein
+    if (isProteinQuery) {
+      let response = `${userName}, here's your protein intake analysis:\n\n`;
+      
+      response += `**💪 Protein Intake Today:**\n`;
+      response += `• Current: ${protein}g\n`;
+      
+      // Calculate protein targets based on body weight and goals
+      const bodyWeight = context.userProfile?.weight || 70;
+      const minProtein = Math.round(bodyWeight * 0.8); // Minimum for maintenance
+      const optimalProtein = Math.round(bodyWeight * 1.6); // Optimal for active individuals
+      const maxProtein = Math.round(bodyWeight * 2.2); // Maximum for muscle building
+      
+      response += `• Minimum needed: ${minProtein}g (0.8g/kg body weight)\n`;
+      response += `• Optimal range: ${optimalProtein}-${maxProtein}g\n`;
+      
+      // Visual progress bar
+      const proteinPercent = Math.round((protein / optimalProtein) * 100);
+      response += `\n${this.createProgressBar(proteinPercent)}\n\n`;
+      
+      // Assessment
+      if (protein >= optimalProtein) {
+        response += `✅ **Excellent!** You're getting plenty of protein!\n`;
+      } else if (protein >= minProtein) {
+        response += `👍 **Good!** You're meeting minimum requirements.\n`;
+        response += `Consider adding ${optimalProtein - protein}g more for optimal intake.\n`;
+      } else {
+        response += `⚠️ **Low protein intake!** You need at least ${minProtein - protein}g more.\n`;
+      }
+      
+      // Protein sources breakdown if available
+      if (mealPlanResult.data.data?.meals) {
+        response += `\n**Protein sources today:**\n`;
+        mealPlanResult.data.data.meals.forEach(meal => {
+          if (meal.nutrition?.protein) {
+            const mealProtein = parseNutritionValue(meal.nutrition.protein);
+            response += `• ${meal.type}: ${meal.name} (${mealProtein}g)\n`;
+          }
+        });
+      }
+      
+      // Recommendations
+      response += `\n**💡 Protein Tips:**\n`;
+      if (protein < optimalProtein) {
+        response += `• Add a protein shake or Greek yogurt as a snack\n`;
+        response += `• Include lean meats, fish, eggs, or legumes in each meal\n`;
+        response += `• Consider protein-rich breakfast options\n`;
+      } else {
+        response += `• Continue spreading protein throughout the day\n`;
+        response += `• Great job maintaining adequate protein intake!\n`;
+      }
+      
+      return {
+        response,
+        functionCalls: [{
+          name: 'get_nutrition_data',
+          parameters: { type: 'meal_plan', timeframe: 'today' },
+          result: mealPlanResult
+        }]
+      };
+    }
+    
+    // Full nutritional analysis
+    let response = `${userName}, here's your nutritional analysis:\n\n`;
+    
+    // Calorie analysis
+    response += `**🔥 Calorie Analysis:**\n`;
+    const target = preferences.calorieTarget || 2000;
+    const calorieDiff = calories - target;
+    const caloriePercent = Math.round((calories / target) * 100);
+    
+    response += `• Consumed: ${calories} kcal\n`;
+    response += `• Target: ${target} kcal\n`;
+    response += `• ${caloriePercent}% of daily goal\n`;
+    
+    // Visual representation
+    response += `\n${this.createProgressBar(caloriePercent)}\n\n`;
+    
+    if (Math.abs(calorieDiff) < 100) {
+      response += `✅ Excellent! You're right on target!\n`;
+    } else if (calorieDiff > 200) {
+      response += `⚠️ You're ${calorieDiff} calories over. Consider reducing portion sizes.\n`;
+    } else if (calorieDiff < -200) {
+      response += `📝 You're ${Math.abs(calorieDiff)} calories under. Make sure you're eating enough!\n`;
+    }
+    
+    // Macro analysis - only show if we have valid data
+    if (protein > 0 || carbs > 0 || fat > 0) {
+      response += `\n**🥗 Macronutrient Breakdown:**\n`;
+      
+      // Calculate percentages
+      const totalMacroCalories = (protein * 4) + (carbs * 4) + (fat * 9);
+      
+      if (totalMacroCalories > 0) {
+        const proteinPercent = Math.round((protein * 4 / totalMacroCalories) * 100);
+        const carbsPercent = Math.round((carbs * 4 / totalMacroCalories) * 100);
+        const fatPercent = Math.round((fat * 9 / totalMacroCalories) * 100);
+        
+        response += `• Protein: ${protein}g (${proteinPercent}%)\n`;
+        response += `• Carbs: ${carbs}g (${carbsPercent}%)\n`;
+        response += `• Fat: ${fat}g (${fatPercent}%)\n`;
+        
+        // Macro targets comparison if available
+        if (preferences.macroTargets) {
+          response += `\n**📊 vs. Your Targets:**\n`;
+          const targets = preferences.macroTargets;
+          
+          if (targets.proteinPercentage) {
+            if (Math.abs(proteinPercent - targets.proteinPercentage) > 10) {
+              response += `• Protein: ${proteinPercent > targets.proteinPercentage ? 'Higher' : 'Lower'} than target (${targets.proteinPercentage}%)\n`;
+            } else {
+              response += `• Protein: ✓ On target!\n`;
+            }
+          }
+          
+          if (targets.carbsPercentage) {
+            if (Math.abs(carbsPercent - targets.carbsPercentage) > 10) {
+              response += `• Carbs: ${carbsPercent > targets.carbsPercentage ? 'Higher' : 'Lower'} than target (${targets.carbsPercentage}%)\n`;
+            } else {
+              response += `• Carbs: ✓ On target!\n`;
+            }
+          }
+          
+          if (targets.fatPercentage) {
+            if (Math.abs(fatPercent - targets.fatPercentage) > 10) {
+              response += `• Fat: ${fatPercent > targets.fatPercentage ? 'Higher' : 'Lower'} than target (${targets.fatPercentage}%)\n`;
+            } else {
+              response += `• Fat: ✓ On target!\n`;
+            }
+          }
+        }
+      }
+    }
+    
+    // Goal-specific recommendations
+    response += `\n**💡 Recommendations:**\n`;
+    
+    // Protein-specific recommendations
+    const bodyWeight = context.userProfile?.weight || 70;
+    const minProtein = Math.round(bodyWeight * 0.8);
+    
+    if (protein < minProtein) {
+      response += `1. Increase protein intake (currently ${protein}g, need ${minProtein}g minimum)\n`;
+    } else {
+      response += `1. Protein intake is adequate (${protein}g) ✓\n`;
+    }
+    
+    // General recommendations
+    response += `2. Stay hydrated - aim for 8 glasses of water daily\n`;
+    response += `3. Include a variety of colorful vegetables\n`;
+    
+    // Add balance recommendation
+    if (protein > 0 && carbs > 0 && fat > 0) {
+      response += `4. Balance each meal with protein, carbs, and healthy fats\n`;
+    }
+    
+    // Hydration reminder
+    const waterIntake = Math.round((bodyWeight) * 35);
+    response += `\n💧 **Hydration Goal:** ${waterIntake}ml of water today`;
+    
+    return {
+      response,
+      functionCalls: [
+        {
+          name: 'get_nutrition_data',
+          parameters: { type: 'meal_plan', timeframe: timeframe },
+          result: mealPlanResult
+        },
+        {
+          name: 'get_nutrition_data',
+          parameters: { type: 'preferences' },
+          result: prefsResult
+        }
+      ]
+    };
+    
+  } catch (error) {
+    console.error('Nutrition analysis handler error:', error);
+    return {
+      response: "I'm having trouble analyzing your nutrition right now. Please try again.",
+      functionCalls: []
+    };
   }
+}
+
+static handleWeeklyNutritionAnalysis(data, preferences, userName, isProteinQuery) {
+  let response = `${userName}, here's your weekly nutrition analysis:\n\n`;
+  
+  // Parse nutrition values helper
+  const parseNutritionValue = (value) => {
+    if (typeof value === 'number') return value;
+    if (typeof value === 'string') {
+      return parseInt(value.replace(/[^0-9]/g, '')) || 0;
+    }
+    return 0;
+  };
+  
+  // Calculate weekly totals
+  let weeklyTotals = { calories: 0, protein: 0, carbs: 0, fat: 0 };
+  let dailyData = [];
+  
+  if (Array.isArray(data.data)) {
+    data.data.forEach((day, index) => {
+      if (day.meals) {
+        let dayTotals = { calories: 0, protein: 0, carbs: 0, fat: 0 };
+        
+        day.meals.forEach(meal => {
+          if (meal.nutrition) {
+            dayTotals.calories += meal.nutrition.calories || 0;
+            dayTotals.protein += parseNutritionValue(meal.nutrition.protein);
+            dayTotals.carbs += parseNutritionValue(meal.nutrition.carbs);
+            dayTotals.fat += parseNutritionValue(meal.nutrition.fat);
+          }
+        });
+        
+        dailyData.push(dayTotals);
+        weeklyTotals.calories += dayTotals.calories;
+        weeklyTotals.protein += dayTotals.protein;
+        weeklyTotals.carbs += dayTotals.carbs;
+        weeklyTotals.fat += dayTotals.fat;
+      }
+    });
+  }
+  
+  const daysTracked = dailyData.length || 1;
+  const avgCalories = Math.round(weeklyTotals.calories / daysTracked);
+  const avgProtein = Math.round(weeklyTotals.protein / daysTracked);
+  const avgCarbs = Math.round(weeklyTotals.carbs / daysTracked);
+  const avgFat = Math.round(weeklyTotals.fat / daysTracked);
+  
+  if (isProteinQuery) {
+    response += `**💪 Weekly Protein Intake:**\n`;
+    response += `• Total this week: ${weeklyTotals.protein}g\n`;
+    response += `• Daily average: ${avgProtein}g\n`;
+    response += `• Days tracked: ${daysTracked}\n\n`;
+    
+    // Daily breakdown
+    response += `**Daily Breakdown:**\n`;
+    const days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
+    dailyData.forEach((day, index) => {
+      if (index < days.length) {
+        response += `• ${days[index]}: ${day.protein}g\n`;
+      }
+    });
+    
+    // Assessment
+    const bodyWeight = 70; // Default if not available
+    const targetProtein = Math.round(bodyWeight * 1.6);
+    
+    response += `\n**Assessment:**\n`;
+    if (avgProtein >= targetProtein) {
+      response += `✅ Great job! You're averaging ${avgProtein}g daily, meeting your protein goals!\n`;
+    } else {
+      response += `📝 You're averaging ${avgProtein}g daily. Consider increasing to ${targetProtein}g for optimal results.\n`;
+    }
+  } else {
+    // Full weekly analysis
+    response += `**📊 Weekly Summary:**\n`;
+    response += `• Days tracked: ${daysTracked}\n`;
+    response += `• Total calories: ${weeklyTotals.calories} kcal\n`;
+    response += `• Average daily: ${avgCalories} kcal\n\n`;
+    
+    response += `**Average Daily Macros:**\n`;
+    response += `• Protein: ${avgProtein}g\n`;
+    response += `• Carbs: ${avgCarbs}g\n`;
+    response += `• Fat: ${avgFat}g\n`;
+    
+    // Consistency analysis
+    response += `\n**Consistency Analysis:**\n`;
+    const target = preferences.calorieTarget || 2000;
+    let consistentDays = 0;
+    
+    dailyData.forEach(day => {
+      if (Math.abs(day.calories - target) < 200) {
+        consistentDays++;
+      }
+    });
+    
+    const consistencyPercent = Math.round((consistentDays / daysTracked) * 100);
+    response += `• ${consistentDays}/${daysTracked} days within target range\n`;
+    response += `• Consistency score: ${consistencyPercent}%\n`;
+    
+    if (consistencyPercent >= 80) {
+      response += `✅ Excellent consistency!\n`;
+    } else if (consistencyPercent >= 60) {
+      response += `👍 Good consistency, room for improvement\n`;
+    } else {
+      response += `📝 Try to be more consistent with daily targets\n`;
+    }
+  }
+  
+  return {
+    response,
+    functionCalls: []
+  };
+}
 
   /**
    * 6. GENERAL WELLNESS HANDLER
