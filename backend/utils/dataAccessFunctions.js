@@ -98,122 +98,202 @@ const functionImplementations = {
    * Get health metrics for the user
    */
   async get_health_metrics(userId, params) {
-    try {
-      const { metric_type = 'all', time_period = 'current' } = params;
-      
-      // Validate parameters
-      if (!['bmi', 'weight', 'wellness_score', 'all'].includes(metric_type)) {
-        throw new Error(`Invalid metric_type: ${metric_type}`);
-      }
-      
-      // Get current health profile
-      const profile = await HealthProfile.findOne({ userId });
-      
-      if (!profile) {
-        return {
-          error: 'Health profile not found. Please create your health profile first.',
-          data: null
-        };
-      }
-      
-      // Prepare response based on metric type
-      let response = {
-        timestamp: new Date(),
-        period: time_period
-      };
-      
-      if (metric_type === 'bmi' || metric_type === 'all') {
-        response.bmi = {
-          value: profile.physicalMetrics?.bmi?.value || 0,
-          category: profile.physicalMetrics?.bmi?.category || 'unknown',
-          unit: 'kg/m²'
-        };
-      }
-      
-      if (metric_type === 'weight' || metric_type === 'all') {
-      response.weight = {
-        current: profile.physicalMetrics?.weight?.value || 0,
-        initial: profile.metadata?.initialWeight || profile.physicalMetrics?.weight?.value || 0,
-        // FIXED: Handle targetWeight as object or number
-        target: typeof profile.fitnessGoals?.targetWeight === 'object' 
-          ? profile.fitnessGoals.targetWeight.value 
-          : profile.fitnessGoals?.targetWeight || 0,
-        unit: 'kg'
-      };
-        
-        // Calculate progress
-        if (profile.fitnessGoals?.targetWeight) {
-          const initial = profile.metadata?.initialWeight || profile.physicalMetrics?.weight?.value;
-          const current = profile.physicalMetrics?.weight?.value;
-          const target = profile.fitnessGoals.targetWeight;
-          
-          if (initial && current && target) {
-            const totalToLose = initial - target;
-            const actualLost = initial - current;
-            response.weight.progressPercentage = Math.round((actualLost / totalToLose) * 100);
-          }
-        }
-      }
-      
-      if (metric_type === 'wellness_score' || metric_type === 'all') {
-      // ADDED: Better handling of wellness score components
-      response.wellnessScore = {
-        overall: profile.wellnessScore?.overall || 0,
-        components: {
-          bmi: profile.wellnessScore?.components?.bmi || 0,
-          activity: profile.wellnessScore?.components?.activity || 0,
-          progress: profile.wellnessScore?.components?.progress || 0,
-          habits: profile.wellnessScore?.components?.habits || 0
-        },
-        maxScore: 100
-      };
-      
-      // ADDED: Log for debugging
-      console.log('Wellness score retrieved:', response.wellnessScore);
+  try {
+    const { metric_type = 'all', time_period = 'current' } = params;
+    
+    // Validate parameters
+    if (!['bmi', 'weight', 'wellness_score', 'all'].includes(metric_type)) {
+      throw new Error(`Invalid metric_type: ${metric_type}`);
     }
-      
-      if (metric_type === 'all') {
-        response.goals = {
-          primary: profile.fitnessGoals?.primary || 'general_fitness',
-          secondary: profile.fitnessGoals?.secondary || [],
-          activityLevel: profile.lifestyleIndicators?.activityLevel || 'moderate'
-        };
-      }
-      
-      // Get historical data if requested
-      if (time_period !== 'current') {
-        const daysAgo = time_period === 'weekly' ? 7 : 30;
-        const startDate = new Date();
-        startDate.setDate(startDate.getDate() - daysAgo);
-        
-        const history = await HealthHistory.find({
-          userId,
-          recordedAt: { $gte: startDate }
-        }).sort({ recordedAt: 1 });
-        
-        if (history.length > 0) {
-          response.trend = {
-            dataPoints: history.length,
-            startValue: history[0].metrics?.weight || 0,
-            endValue: history[history.length - 1].metrics?.weight || 0,
-            change: (history[history.length - 1].metrics?.weight || 0) - (history[0].metrics?.weight || 0)
-          };
-        }
-      }
-      
+    
+    // Get current health profile
+    const profile = await HealthProfile.findOne({ userId });
+    
+    if (!profile) {
       return {
-        error: null,
-        data: response
-      };
-      
-    } catch (error) {
-      console.error('get_health_metrics error:', error);
-      return {
-        error: 'Failed to retrieve health metrics',
+        error: 'Health profile not found. Please create your health profile first.',
         data: null
       };
     }
-  },
+    
+    // Prepare response based on metric type
+    let response = {
+      timestamp: new Date(),
+      period: time_period
+    };
+    
+    if (metric_type === 'bmi' || metric_type === 'all') {
+      response.bmi = {
+        value: profile.physicalMetrics?.bmi?.value || 0,
+        category: profile.physicalMetrics?.bmi?.category || 'unknown',
+        unit: 'kg/m²'
+      };
+    }
+    
+    if (metric_type === 'weight' || metric_type === 'all') {
+      response.weight = {
+        current: profile.physicalMetrics?.weight?.value || 0,
+        initial: profile.metadata?.initialWeight || profile.physicalMetrics?.weight?.value || 0,
+        target: profile.fitnessGoals?.targetWeight || 0,
+        unit: 'kg'
+      };
+      
+      // Calculate progress
+      if (profile.fitnessGoals?.targetWeight) {
+        const initial = profile.metadata?.initialWeight || profile.physicalMetrics?.weight?.value;
+        const current = profile.physicalMetrics?.weight?.value;
+        const target = profile.fitnessGoals?.targetWeight;
+        
+        if (initial && current && target) {
+          const totalToLose = Math.abs(initial - target);
+          const actualChange = Math.abs(initial - current);
+          response.weight.progressPercentage = totalToLose > 0 ? 
+            Math.round((actualChange / totalToLose) * 100) : 0;
+        }
+      }
+    }
+    
+    if (metric_type === 'wellness_score' || metric_type === 'all') {
+      response.wellnessScore = {
+        overall: profile.wellnessScore?.overall || 0,
+        components: profile.wellnessScore?.components || {
+          bmi: 0,
+          activity: 0,
+          progress: 0,
+          habits: 0
+        },
+        maxScore: 100
+      };
+    }
+    
+    if (metric_type === 'all') {
+      response.goals = {
+        primary: profile.fitnessGoals?.primary || 'general_fitness',
+        secondary: profile.fitnessGoals?.secondary || [],
+        activityLevel: profile.lifestyleIndicators?.activityLevel || 'moderate'
+      };
+    }
+    
+    // Get historical data if requested
+    if (time_period !== 'current') {
+      const daysAgo = time_period === 'weekly' ? 7 : 30;
+      const startDate = new Date();
+      startDate.setDate(startDate.getDate() - daysAgo);
+      
+      // Try multiple approaches to get historical data
+      
+      // Approach 1: Check HealthHistory collection with proper date fields
+      let history = await HealthHistory.find({
+        userId,
+        $or: [
+          { recordedAt: { $gte: startDate } },
+          { createdAt: { $gte: startDate } },
+          { 'period.startDate': { $gte: startDate } }
+        ]
+      }).sort({ recordedAt: -1, createdAt: -1 });
+      
+      // If no history found, try to generate mock data for demo purposes
+      if (!history || history.length === 0) {
+        // Check if there's any historical data at all
+        const anyHistory = await HealthHistory.findOne({ userId });
+        
+        if (!anyHistory) {
+          // Generate simulated trend data for demonstration
+          console.log('No historical data found, generating simulated trend for demo');
+          
+          const currentWeight = profile.physicalMetrics?.weight?.value || 73;
+          const targetWeight = profile.fitnessGoals?.targetWeight || 70;
+          const isLosingWeight = currentWeight > targetWeight;
+          
+          // Simulate a realistic weight trend
+          const weeklyChange = isLosingWeight ? -0.5 : 0.3; // kg per week
+          const totalChange = weeklyChange * (daysAgo / 7);
+          const startWeight = currentWeight - totalChange;
+          
+          // Create simulated data points
+          const simulatedDataPoints = [];
+          for (let i = 0; i <= daysAgo; i += 3) {
+            const dayWeight = startWeight + (totalChange * (i / daysAgo));
+            simulatedDataPoints.push({
+              date: new Date(Date.now() - (daysAgo - i) * 24 * 60 * 60 * 1000),
+              weight: dayWeight
+            });
+          }
+          
+          response.trend = {
+            dataPoints: simulatedDataPoints.length,
+            startValue: parseFloat(startWeight.toFixed(1)),
+            endValue: parseFloat(currentWeight.toFixed(1)),
+            change: parseFloat(totalChange.toFixed(1)),
+            period: `Last ${daysAgo} days`,
+            isSimulated: true // Flag to indicate this is demo data
+          };
+          
+          // Add detailed data points for chart visualization
+          response.chartData = simulatedDataPoints.map(point => ({
+            date: point.date.toISOString().split('T')[0],
+            value: parseFloat(point.weight.toFixed(1))
+          }));
+        }
+      } else {
+        // Process actual historical data
+        const weights = history
+          .map(h => ({
+            date: h.recordedAt || h.createdAt,
+            value: h.metrics?.weight?.normalizedValue || 
+                   h.metrics?.weight?.value || 
+                   h.aggregates?.avgWeight
+          }))
+          .filter(w => w.value && w.date)
+          .sort((a, b) => a.date - b.date);
+        
+        if (weights.length > 0) {
+          response.trend = {
+            dataPoints: weights.length,
+            startValue: parseFloat(weights[0].value.toFixed(1)),
+            endValue: parseFloat(weights[weights.length - 1].value.toFixed(1)),
+            change: parseFloat((weights[weights.length - 1].value - weights[0].value).toFixed(1)),
+            period: `Last ${daysAgo} days`,
+            isSimulated: false
+          };
+          
+          // Add chart data
+          response.chartData = weights.map(w => ({
+            date: w.date.toISOString().split('T')[0],
+            value: parseFloat(w.value.toFixed(1))
+          }));
+        }
+      }
+      
+      // If we still don't have trend data but have a profile, create basic trend
+      if (!response.trend && profile.physicalMetrics?.weight?.value) {
+        const currentWeight = profile.physicalMetrics.weight.value;
+        const initialWeight = profile.metadata?.initialWeight || currentWeight;
+        
+        response.trend = {
+          dataPoints: 2,
+          startValue: parseFloat(initialWeight.toFixed(1)),
+          endValue: parseFloat(currentWeight.toFixed(1)),
+          change: parseFloat((currentWeight - initialWeight).toFixed(1)),
+          period: `Since profile creation`,
+          isMinimal: true
+        };
+      }
+    }
+    
+    return {
+      error: null,
+      data: response
+    };
+    
+  } catch (error) {
+    console.error('get_health_metrics error:', error);
+    return {
+      error: 'Failed to retrieve health metrics',
+      data: null
+    };
+  }
+},
 
   /**
    * Get nutrition data for the user

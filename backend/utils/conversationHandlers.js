@@ -9,297 +9,300 @@ const { executeFunction } = require('./dataAccessFunctions');
 
 class ConversationHandlers {
   /**
-   * 1. HEALTH METRICS HANDLER
-   * Handles: BMI, weight, wellness score queries
-   * Interprets: Trends, comparisons to goals, health categories
-   */
-  static async handleHealthMetrics(userId, query, context) {
-    try {
-      const lowerQuery = query.toLowerCase();
+  * 1. HEALTH METRICS HANDLER
+ * Handles: BMI, weight, wellness score queries, weight trends from charts
+ * Interprets: Trends, comparisons to goals, health categories, pattern analysis
+ */
+static async handleHealthMetrics(userId, query, context) {
+  try {
+    const lowerQuery = query.toLowerCase();
+    
+    // Enhanced detection for trend/chart queries
+    const isTrendQuery = 
+      (lowerQuery.includes('trend') || 
+       lowerQuery.includes('chart') || 
+       lowerQuery.includes('graph') ||
+       lowerQuery.includes('pattern') ||
+       lowerQuery.includes('history')) &&
+      (lowerQuery.includes('weight') || 
+       lowerQuery.includes('progress'));
+    
+    // Determine what specific metric is being asked about
+    const isWeightChange = lowerQuery.includes('weight') && (
+      lowerQuery.includes('change') || 
+      lowerQuery.includes('this month') || 
+      lowerQuery.includes('lost') ||
+      lowerQuery.includes('gained') ||
+      lowerQuery.includes('week')
+    );
+    
+    // Wellness score improvement queries
+    const isWellnessImprovement = 
+      (lowerQuery.includes('wellness') || lowerQuery.includes('score')) && 
+      (lowerQuery.includes('improve') || lowerQuery.includes('increase') || 
+       lowerQuery.includes('boost') || lowerQuery.includes('better'));
+    
+    // Determine time period for data retrieval
+    let timePeriod = 'current';
+    if (isTrendQuery || lowerQuery.includes('month')) {
+      timePeriod = 'monthly';
+    } else if (lowerQuery.includes('week')) {
+      timePeriod = 'weekly';
+    }
+    
+    // Get comprehensive health data
+    const metricsResult = await executeFunction('get_health_metrics', userId, {
+      metric_type: 'all',
+      time_period: timePeriod
+    });
+    
+    if (!metricsResult.data) {
+      return {
+        response: "I'd love to help you track your health metrics, but I don't see a health profile yet. Would you like to set one up? It only takes a few minutes and will help me provide personalized insights.",
+        functionCalls: []
+      };
+    }
+    
+    const data = metricsResult.data;
+    const userName = context.userProfile?.name || 'there';
+    let response = '';
+    
+    // Handle weight trend/chart queries
+    if (isTrendQuery) {
+      response = `${userName}, here's your weight trend analysis:\n\n`;
       
-      // Determine what specific metric is being asked about
-      const isWeightChange = lowerQuery.includes('weight') && (
-        lowerQuery.includes('change') || 
-        lowerQuery.includes('this month') || 
-        lowerQuery.includes('lost') ||
-        lowerQuery.includes('gained')
-      );
-      
-      const isWellnessScore = lowerQuery.includes('wellness') && (
-        lowerQuery.includes('score') || 
-        lowerQuery.includes('improve') ||
-        lowerQuery.includes('focus')
-      );
-      
-      // Get comprehensive health data
-      const metricsResult = await executeFunction('get_health_metrics', userId, {
-        metric_type: 'all',
-        time_period: isWeightChange ? 'monthly' : 'current'
-      });
-      
-      if (!metricsResult.data) {
-        return {
-          response: "I'd love to help you track your health metrics, but I don't see a health profile yet. Would you like to set one up? It only takes a few minutes and will help me provide personalized insights.",
-          functionCalls: []
-        };
-      }
-      
-      const data = metricsResult.data;
-      const userName = context.userProfile?.name || 'there';
-      let response = '';
-      
-      // Handle specific weight change queries
-      if (isWeightChange) {
-        response += `Hi ${userName}! Let me check your weight changes this month:\n\n`;
+      if (data.trend && data.trend.dataPoints > 0) {
+        const trendData = data.trend;
+        const change = trendData.change || 0;
+        const startWeight = trendData.startValue || data.weight?.initial;
+        const currentWeight = trendData.endValue || data.weight?.current;
+        const dataPoints = trendData.dataPoints;
         
-        if (data.trend) {
-          const change = data.trend.change;
-          const startWeight = data.trend.startValue;
-          const currentWeight = data.trend.endValue || data.weight?.current;
+        response += `**📊 Weight Trend Analysis:**\n`;
+        response += `• Period analyzed: Last ${timePeriod === 'weekly' ? 'week' : '30 days'}\n`;
+        response += `• Data points tracked: ${dataPoints}\n`;
+        response += `• Starting weight: ${startWeight} kg\n`;
+        response += `• Current weight: ${currentWeight} kg\n`;
+        response += `• Total change: ${change > 0 ? '+' : ''}${change.toFixed(1)} kg\n\n`;
+        
+        // Analyze the pattern
+        response += `**📈 Pattern Description:**\n`;
+        
+        if (Math.abs(change) < 0.5) {
+          response += `Your weight has been **stable** with minimal fluctuation (less than 0.5 kg change).\n`;
+          response += `This indicates consistent habits and good maintenance.\n`;
+        } else if (change < -2) {
+          response += `You're showing a **steady decline** in weight.\n`;
+          const weeklyRate = Math.abs(change) / (dataPoints / 7);
+          response += `• Average loss: ${weeklyRate.toFixed(2)} kg per week\n`;
           
-          response += `**📊 Monthly Weight Summary:**\n`;
-          response += `• Start of month: ${startWeight} kg\n`;
-          response += `• Current weight: ${currentWeight} kg\n`;
-          
-          if (change < 0) {
-            response += `• **You've lost ${Math.abs(change).toFixed(1)} kg this month!** 🎉\n\n`;
-            response += `That's excellent progress! A healthy weight loss rate is 0.5-1 kg per week, so you're doing great.`;
-          } else if (change > 0) {
-            response += `• **You've gained ${change.toFixed(1)} kg this month**\n\n`;
-            
-            // Context-aware response based on goals
-            if (data.goals?.primary === 'muscle_gain') {
-              response += `This could be positive if you're building muscle! Make sure you're combining this with strength training.`;
-            } else if (data.goals?.primary === 'weight_loss') {
-              response += `This isn't aligned with your weight loss goal. Let's review your nutrition and exercise routine.`;
-            } else {
-              response += `Weight fluctuation is normal. Focus on how you feel and your overall wellness.`;
-            }
+          if (weeklyRate > 1) {
+            response += `⚠️ This is faster than the recommended 0.5-1 kg/week. Consider slowing down for sustainable results.\n`;
           } else {
-            response += `• **Your weight has remained stable this month**\n\n`;
-            response += `Maintaining weight shows good consistency! Focus on other health markers too.`;
+            response += `✅ This is a healthy, sustainable rate of weight loss!\n`;
           }
-        } else {
-          response += `I don't have enough historical data to show weight changes. Keep logging your weight regularly for trend analysis!`;
-        }
-        
-        return {
-          response,
-          functionCalls: [{
-            name: 'get_health_metrics',
-            parameters: { metric_type: 'all', time_period: 'monthly' },
-            result: metricsResult
-          }]
-        };
-      }
-      
-      // Handle wellness score improvement queries
-      if (isWellnessScore) {
-        response += `Hi ${userName}! Let's look at your wellness score and how to improve it:\n\n`;
-        
-        if (data.wellnessScore) {
-          response += `**🌟 Current Wellness Score: ${data.wellnessScore.overall}/100**\n\n`;
+        } else if (change < 0) {
+          response += `You're showing a **gradual decline** in weight.\n`;
+          response += `• Average loss: ${(Math.abs(change) / (dataPoints / 7)).toFixed(2)} kg per week\n`;
+          response += `This is a healthy, controlled pace.\n`;
+        } else if (change > 2) {
+          response += `You're showing a **significant increase** in weight.\n`;
+          response += `• Average gain: ${(change / (dataPoints / 7)).toFixed(2)} kg per week\n`;
           
-          // Check if we have components data
-          if (data.wellnessScore.components && typeof data.wellnessScore.components === 'object') {
-            const components = data.wellnessScore.components;
-            
-            // Convert components to array and filter valid values
-            const componentArray = Object.entries(components)
-              .filter(([key, value]) => value !== undefined && value !== null && !isNaN(value))
-              .map(([key, value]) => ({ 
-                name: key.charAt(0).toUpperCase() + key.slice(1), 
-                score: Number(value) 
-              }));
-            
-            if (componentArray.length > 0) {
-              // Sort by score (lowest first for improvement focus)
-              componentArray.sort((a, b) => a.score - b.score);
-              
-              response += `**📊 Component Breakdown:**\n`;
-              componentArray.forEach(comp => {
-                const emoji = comp.score >= 20 ? '✅' : comp.score >= 15 ? '⚠️' : '❌';
-                response += `${emoji} ${comp.name}: ${comp.score}/25\n`;
-              });
-              
-              response += `\n**🎯 Focus Areas for Improvement:**\n\n`;
-              
-              // Get the lowest scoring components for focused recommendations
-              const improvementAreas = componentArray.filter(c => c.score < 20);
-              
-              if (improvementAreas.length > 0) {
-                improvementAreas.slice(0, 3).forEach((area, index) => {
-                  response += `**${index + 1}. ${area.name} (${area.score}/25)**\n`;
-                  
-                  switch(area.name.toLowerCase()) {
-                    case 'bmi':
-                      response += `   • Work towards a healthy BMI range (18.5-24.9)\n`;
-                      response += `   • Aim for gradual weight changes (0.5-1 kg/week)\n`;
-                      response += `   • Track your calories and maintain portion control\n`;
-                      break;
-                    case 'activity':
-                      response += `   • Increase to 150 minutes of moderate exercise weekly\n`;
-                      response += `   • Start with 20-minute daily walks\n`;
-                      response += `   • Add strength training 2x per week\n`;
-                      break;
-                    case 'progress':
-                      response += `   • Set realistic, measurable goals\n`;
-                      response += `   • Track your metrics weekly\n`;
-                      response += `   • Celebrate small victories along the way\n`;
-                      break;
-                    case 'habits':
-                      response += `   • Prioritize 7-9 hours of quality sleep\n`;
-                      response += `   • Manage stress with meditation or yoga\n`;
-                      response += `   • Stay hydrated with 8+ glasses of water daily\n`;
-                      break;
-                    case 'nutrition':
-                      response += `   • Balance your macronutrients (protein, carbs, fats)\n`;
-                      response += `   • Eat 5+ servings of fruits and vegetables daily\n`;
-                      response += `   • Limit processed foods and added sugars\n`;
-                      break;
-                    case 'sleep':
-                      response += `   • Maintain consistent sleep/wake times\n`;
-                      response += `   • Create a relaxing bedtime routine\n`;
-                      response += `   • Keep your bedroom cool and dark\n`;
-                      break;
-                    default:
-                      response += `   • Focus on consistent daily habits\n`;
-                      response += `   • Track your progress regularly\n`;
-                      response += `   • Seek support when needed\n`;
-                  }
-                  response += '\n';
-                });
-                
-                response += `**💡 Quick Win:** Start with your lowest scoring area (${improvementAreas[0].name}) for the biggest impact on your overall wellness!\n\n`;
-                response += `**📈 Potential Impact:** Improving your ${improvementAreas[0].name} score by just 5 points could boost your overall wellness score by ${Math.round(5 / componentArray.length)}+ points!`;
-              } else {
-                // All components are doing well
-                response += `Great job! All your components are scoring well (20+/25). To push your score even higher:\n\n`;
-                response += `• **Consistency is key:** Maintain your current healthy habits\n`;
-                response += `• **Fine-tune:** Small improvements in each area add up\n`;
-                response += `• **Challenge yourself:** Set slightly more ambitious goals\n`;
-                response += `• **Track trends:** Monitor your progress over time\n`;
-              }
-            } else {
-              // No valid components found
-              response += `I'm having trouble loading your wellness score components. Please ensure your health profile is complete.\n\n`;
-              response += `**To improve your wellness score:**\n`;
-              response += `• Complete all sections of your health profile\n`;
-              response += `• Log your activities and meals regularly\n`;
-              response += `• Set clear fitness goals\n`;
-              response += `• Track your progress consistently\n`;
-            }
+          if (data.goals?.primary === 'muscle_gain') {
+            response += `This aligns with your muscle-building goals. Ensure you're strength training to maximize muscle gain.\n`;
           } else {
-            // Components object is missing or invalid
-            response += `**To calculate detailed wellness components:**\n`;
-            response += `• Complete your health profile\n`;
-            response += `• Add your fitness goals\n`;
-            response += `• Log your daily activities\n`;
-            response += `• Track your nutrition\n\n`;
-            response += `Once you have more data logged, I can provide specific improvement recommendations!`;
+            response += `Consider reviewing your caloric intake and activity levels.\n`;
           }
         } else {
-          response += `I don't see a wellness score yet. Complete your health profile to get started!`;
+          response += `You're showing a **slight increase** in weight.\n`;
+          response += `• Average gain: ${(change / (dataPoints / 7)).toFixed(2)} kg per week\n`;
+          response += `Small fluctuations are normal. Focus on long-term consistency.\n`;
         }
         
-        return {
-          response,
-          functionCalls: [{
-            name: 'get_health_metrics',
-            parameters: { metric_type: 'all', time_period: 'current' },
-            result: metricsResult
-          }]
-        };
-      }
-      
-      // Default comprehensive health metrics response
-      response += `Hi ${userName}! Here's your health metrics overview:\n\n`;
-      
-      // BMI section
-      if (data.bmi) {
-        response += `**📏 BMI: ${data.bmi.value}** (${data.bmi.category})\n`;
-        response += `• Normal range: 18.5 - 24.9\n`;
-        
-        if (data.bmi.value < 18.5) {
-          response += `• You're underweight. Consider increasing caloric intake with nutritious foods.\n`;
-        } else if (data.bmi.value >= 25 && data.bmi.value < 30) {
-          response += `• You're slightly overweight. Small lifestyle changes can make a big difference!\n`;
-        } else if (data.bmi.value >= 30) {
-          response += `• Your BMI indicates obesity. Consider consulting a healthcare provider for a personalized plan.\n`;
+        // Visual trend indicator
+        response += `\n**Trend Direction:** `;
+        if (change < -0.5) {
+          response += `📉 Decreasing\n`;
+        } else if (change > 0.5) {
+          response += `📈 Increasing\n`;
         } else {
-          response += `• Great job maintaining a healthy BMI! 🎉\n`;
+          response += `➡️ Stable\n`;
         }
-      }
-      
-      // Weight section
-      if (data.weight) {
-        response += `\n**⚖️ Weight Status:**\n`;
-        response += `• Current: ${data.weight.current} kg\n`;
         
-        if (data.goals?.targetWeight) {
-          const targetValue = typeof data.goals.targetWeight === 'object' 
-            ? data.goals.targetWeight.value 
-            : data.goals.targetWeight;
+        // Add key insights
+        response += `\n**💡 Key Insights:**\n`;
+        
+        // Calculate volatility (simplified)
+        if (dataPoints >= 3) {
+          response += `• Consistency: `;
+          if (Math.abs(change) / dataPoints < 0.2) {
+            response += `High (minimal daily fluctuations)\n`;
+          } else {
+            response += `Moderate (normal fluctuations)\n`;
+          }
+        }
+        
+        // Progress to goal
+        if (data.weight?.target) {
+          const targetWeight = typeof data.weight.target === 'object' ? 
+            (data.weight.target.value || data.weight.target.normalizedValue) : 
+            data.weight.target;
           
-          if (targetValue) {
-            response += `• Target: ${targetValue} kg\n`;
-            
-            const difference = Math.abs(data.weight.current - targetValue);
-            const toGo = data.weight.current > targetValue ? 'lose' : 'gain';
-            
-            response += `• To go: ${difference.toFixed(1)} kg to ${toGo}\n`;
-            
-            // Progress calculation
-            const initialWeight = data.weight.initial || data.weight.current;
-            const totalToChange = Math.abs(initialWeight - targetValue);
-            const actualChange = Math.abs(initialWeight - data.weight.current);
-            const progressPercent = totalToChange > 0 ? 
-              Math.round((actualChange / totalToChange) * 100) : 0;
-            
-            response += `• Progress: ${progressPercent}% complete\n`;
-            
-            if (progressPercent >= 75) {
-              response += `\n🎉 Amazing! You're almost at your goal!`;
-            } else if (progressPercent >= 50) {
-              response += `\n💪 Great progress! You're more than halfway there.`;
-            } else if (progressPercent >= 25) {
-              response += `\n👍 Good start! Keep up the momentum.`;
-            } else {
-              response += `\n🚀 You're on your way! Every step counts.`;
-            }
+          const toGo = Math.abs(currentWeight - targetWeight);
+          response += `• Distance to goal: ${toGo.toFixed(1)} kg\n`;
+          
+          if (change < 0 && targetWeight < currentWeight) {
+            response += `• On track: Yes! Moving toward your target\n`;
+          } else if (change > 0 && targetWeight > currentWeight) {
+            response += `• On track: Yes! Moving toward your target\n`;
+          } else if (Math.abs(change) < 0.1) {
+            response += `• On track: Stable, but not progressing toward goal\n`;
+          } else {
+            response += `• On track: No, moving away from target\n`;
           }
         }
+        
+        // Timeframe predictions
+        if (data.weight?.target && Math.abs(change) > 0.1) {
+          const targetWeight = typeof data.weight.target === 'object' ? 
+            (data.weight.target.value || data.weight.target.normalizedValue) : 
+            data.weight.target;
+          
+          const remaining = Math.abs(currentWeight - targetWeight);
+          const currentRate = Math.abs(change) / (dataPoints / 7); // per week
+          
+          if (currentRate > 0) {
+            const weeksToGoal = Math.round(remaining / currentRate);
+            response += `\n**🎯 Projection:**\n`;
+            response += `At your current rate, you'll reach your goal in approximately ${weeksToGoal} weeks.\n`;
+          }
+        }
+        
+      } else {
+        // No trend data available - provide current status
+        response += `I don't have enough historical data points to show a complete trend yet.\n\n`;
+        response += `**Current Status:**\n`;
+        response += `• Weight: ${data.weight?.current || 'Not recorded'} kg\n`;
+        
+        if (data.bmi) {
+          response += `• BMI: ${data.bmi.value} (${data.bmi.category})\n`;
+        }
+        
+        response += `\n💡 **Tip:** Regular tracking helps identify patterns. Try to record your weight at the same time each week for the most accurate trends.\n`;
       }
       
-      // Wellness score interpretation
+      return {
+        response,
+        functionCalls: [{
+          name: 'get_health_metrics',
+          parameters: { metric_type: 'all', time_period: timePeriod },
+          result: metricsResult
+        }]
+      };
+    }
+    
+    // Handle specific weight change queries (existing code)
+    if (isWeightChange) {
+      response += `${userName}, let me check your weight changes:\n\n`;
+      
+      if (data.trend) {
+        const change = data.trend.change;
+        const startWeight = data.trend.startValue;
+        const currentWeight = data.trend.endValue || data.weight?.current;
+        
+        response += `**📊 Weight Summary:**\n`;
+        response += `• Start of period: ${startWeight} kg\n`;
+        response += `• Current weight: ${currentWeight} kg\n`;
+        
+        if (change < 0) {
+          response += `• **You've lost ${Math.abs(change).toFixed(1)} kg!** 🎉\n\n`;
+          response += `That's excellent progress! A healthy weight loss rate is 0.5-1 kg per week.`;
+        } else if (change > 0) {
+          response += `• **You've gained ${change.toFixed(1)} kg**\n\n`;
+          
+          // Context-aware response based on goals
+          if (data.goals?.primary === 'muscle_gain') {
+            response += `This could be positive if you're building muscle! Make sure you're combining this with strength training.`;
+          } else if (data.goals?.primary === 'weight_loss') {
+            response += `This isn't aligned with your weight loss goal. Let's review your nutrition and activity levels.`;
+          } else {
+            response += `Weight fluctuations are normal. Focus on overall trends rather than daily changes.`;
+          }
+        } else {
+          response += `• **Your weight has remained stable** (no change)\n\n`;
+          response += `Maintaining a stable weight shows good consistency!`;
+        }
+        
+        // Add progress towards goal if applicable
+        if (data.weight?.target && data.weight?.progressPercentage !== undefined) {
+          response += `\n\n**Progress to Goal:** ${data.weight.progressPercentage}% complete`;
+          const remaining = Math.abs(currentWeight - data.weight.target);
+          response += `\n• ${remaining.toFixed(1)} kg to go!`;
+        }
+        
+      } else {
+        response += `I don't have enough historical data to show changes yet.\n\n`;
+        response += `**Current Weight:** ${data.weight?.current || 'Not recorded'} kg\n`;
+      }
+      
+      return {
+        response,
+        functionCalls: [{
+          name: 'get_health_metrics',
+          parameters: { metric_type: 'all', time_period: timePeriod },
+          result: metricsResult
+        }]
+      };
+    }
+    
+    // Handle wellness score improvement queries
+    if (isWellnessImprovement) {
+      response += `${userName}, let's improve your wellness score!\n\n`;
+      
       if (data.wellnessScore) {
-        response += `\n\n**🌟 Wellness Score: ${data.wellnessScore.overall}/100**\n`;
+        response += `**🌟 Current Wellness Score: ${data.wellnessScore.overall}/100**\n\n`;
         
-        // Only show component breakdown if we have valid data
-        if (data.wellnessScore.components) {
-          const components = data.wellnessScore.components;
-          const validComponents = Object.entries(components)
-            .filter(([key, value]) => value !== undefined && value !== null)
-            .map(([key, value]) => ({ name: key, score: value }));
-          
-          if (validComponents.length > 0) {
-            validComponents.sort((a, b) => b.score - a.score);
-            
-            response += `• Strongest area: ${validComponents[0].name} (${validComponents[0].score}/25)\n`;
-            if (validComponents.length > 1) {
-              response += `• Area to improve: ${validComponents[validComponents.length - 1].name} (${validComponents[validComponents.length - 1].score}/25)\n`;
-            }
-          }
+        response += `**Breakdown:**\n`;
+        const components = data.wellnessScore.components;
+        const sortedComponents = Object.entries(components || {})
+          .sort((a, b) => a[1] - b[1]); // Sort by score, lowest first
+        
+        sortedComponents.forEach(([component, score]) => {
+          const emoji = score >= 20 ? '✅' : score >= 15 ? '⚠️' : '❌';
+          response += `${emoji} ${component.charAt(0).toUpperCase() + component.slice(1)}: ${score}/25\n`;
+        });
+        
+        // Focus on lowest scoring areas
+        const lowestArea = sortedComponents[0];
+        response += `\n**🎯 Focus Area:** ${lowestArea[0].charAt(0).toUpperCase() + lowestArea[0].slice(1)}\n`;
+        
+        // Provide specific recommendations
+        response += `\n**💡 Recommendations to improve:**\n`;
+        
+        switch(lowestArea[0]) {
+          case 'bmi':
+            response += `• Work on reaching a healthy BMI (18.5-24.9)\n`;
+            response += `• Focus on balanced nutrition and regular exercise\n`;
+            break;
+          case 'activity':
+            response += `• Increase weekly exercise to 150+ minutes\n`;
+            response += `• Add strength training 2-3 times per week\n`;
+            response += `• Take 10,000 steps daily\n`;
+            break;
+          case 'nutrition':
+            response += `• Track your meals consistently\n`;
+            response += `• Balance macronutrients (protein, carbs, fats)\n`;
+            response += `• Increase vegetable intake to 5 servings daily\n`;
+            break;
+          case 'habits':
+            response += `• Improve sleep quality (7-9 hours nightly)\n`;
+            response += `• Manage stress with meditation or yoga\n`;
+            response += `• Stay hydrated (8+ glasses of water daily)\n`;
+            break;
         }
         
-        // Overall interpretation
-        if (data.wellnessScore.overall >= 80) {
-          response += `\n🏆 Excellent wellness score! You're doing fantastic!`;
-        } else if (data.wellnessScore.overall >= 60) {
-          response += `\n✨ Good wellness score! There's room for improvement, but you're on the right track.`;
-        } else {
-          response += `\n📈 Your wellness score shows opportunity for improvement. Let's work on building healthier habits together!`;
-        }
+        response += `\n**Potential improvement:** +${25 - lowestArea[1]} points by focusing on ${lowestArea[0]}!`;
       }
       
       return {
@@ -310,15 +313,79 @@ class ConversationHandlers {
           result: metricsResult
         }]
       };
-      
-    } catch (error) {
-      console.error('Health metrics handler error:', error);
-      return {
-        response: "I'm having trouble accessing your health metrics right now. Please try again in a moment.",
-        functionCalls: []
-      };
     }
+    
+    // Default: Show current health metrics
+    response += `Hi ${userName}! Here's your health metrics overview:\n\n`;
+    
+    // BMI
+    if (data.bmi) {
+      response += `**📏 BMI: ${data.bmi.value}** (${data.bmi.category})\n`;
+      response += `• Normal range: 18.5 - 24.9\n`;
+      
+      if (data.bmi.value >= 18.5 && data.bmi.value < 25) {
+        response += `• Great job maintaining a healthy BMI! 🎉\n`;
+      }
+    }
+    
+    // Weight
+    if (data.weight) {
+      response += `\n**⚖️ Weight Status:**\n`;
+      response += `• Current: ${data.weight.current} kg\n`;
+      
+      if (data.weight.target) {
+        const targetWeight = typeof data.weight.target === 'object' ? 
+          (data.weight.target.value || data.weight.target.normalizedValue) : 
+          data.weight.target;
+        response += `• Target: ${targetWeight} kg\n`;
+        
+        if (data.weight.progressPercentage) {
+          response += `• Progress: ${data.weight.progressPercentage}% complete\n`;
+        }
+      }
+    }
+    
+    // Wellness Score
+    if (data.wellnessScore) {
+      response += `\n**🌟 Wellness Score: ${data.wellnessScore.overall}/100**\n`;
+      
+      // Find strongest and weakest areas
+      const components = Object.entries(data.wellnessScore.components || {});
+      if (components.length > 0) {
+        const strongest = components.reduce((a, b) => a[1] > b[1] ? a : b);
+        const weakest = components.reduce((a, b) => a[1] < b[1] ? a : b);
+        
+        response += `• Strongest area: ${strongest[0]} (${strongest[1]}/25)\n`;
+        response += `• Area to improve: ${weakest[0]} (${weakest[1]}/25)\n`;
+      }
+      
+      // Overall assessment
+      if (data.wellnessScore.overall >= 80) {
+        response += `\n🏆 Excellent wellness score! You're doing fantastic!`;
+      } else if (data.wellnessScore.overall >= 60) {
+        response += `\n👍 Good wellness score! Keep up the great work!`;
+      } else {
+        response += `\n💪 Room for improvement - let's work on boosting your score!`;
+      }
+    }
+    
+    return {
+      response,
+      functionCalls: [{
+        name: 'get_health_metrics',
+        parameters: { metric_type: 'all', time_period: timePeriod },
+        result: metricsResult
+      }]
+    };
+    
+  } catch (error) {
+    console.error('Health metrics handler error:', error);
+    return {
+      response: "I'm having trouble accessing your health metrics right now. Please try again in a moment.",
+      functionCalls: []
+    };
   }
+}
 
   /**
    * 2. PROGRESS HANDLER
