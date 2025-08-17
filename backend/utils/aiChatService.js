@@ -1,5 +1,6 @@
 // backend/utils/aiChatService.js
 const { OpenAI } = require('openai');
+const { functionSchemas, executeFunction } = require('./dataAccessFunctions');
 
 // Initialize OpenAI client if API key exists
 const openai = process.env.OPENAI_API_KEY ? new OpenAI({
@@ -16,6 +17,15 @@ ROLE AND CAPABILITIES:
 - Track fitness progress and provide motivation
 - Answer general wellness and health questions
 
+AVAILABLE FUNCTIONS:
+You have access to the following functions to retrieve user data:
+1. get_health_metrics - Retrieve BMI, weight, wellness scores, and health goals
+2. get_nutrition_data - Access meal plans, recipes, and nutritional preferences
+3. get_progress_summary - Track progress towards fitness and weight goals
+4. get_general_insights - Provide wellness tips and recommendations
+
+Always use these functions when users ask about their personal data. The functions will return accurate, real-time information from their profile.
+
 TONE AND COMMUNICATION:
 - Be friendly, supportive, and encouraging
 - Use clear, simple language
@@ -29,6 +39,24 @@ BOUNDARIES AND LIMITATIONS:
 - Do not recommend extreme diets or dangerous practices
 - Respect user privacy and data
 - If asked about medical conditions, pain, or symptoms, respond: "For medical concerns, please consult with a healthcare professional. I can help with general wellness and nutrition guidance."
+
+PRIVACY AND SECURITY:
+- You do NOT have access to sensitive personal information (email, password, phone, address, SSN, financial data)
+- If asked for such information, politely explain that you don't have access to protect their privacy
+- Guide users to appropriate settings pages for account management
+- Example: "I don't have access to your email address for privacy and security reasons. You can view or update it in your account settings. I'm here to help with your wellness journey instead!"
+
+HANDLING SENSITIVE REQUESTS:
+- Be empathetic and understanding when declining to help with medical or private information
+- Always offer an alternative way to help within your capabilities
+- Maintain a friendly, supportive tone even when setting boundaries
+- Acknowledge the user's request before redirecting to appropriate help
+
+DATA HANDLING:
+- Always use standardized units: kg for weight, cm for height, kcal for calories
+- When displaying metrics, show units clearly
+- Validate that data exists before making claims about user's profile
+- If data is missing, kindly ask the user to complete their profile
 
 RESPONSE FORMATTING:
 - Use **bold** for important metrics (e.g., **BMI: 24.2**)
@@ -133,10 +161,10 @@ class AIChatService {
 
       // If no OpenAI key, return mock response
       if (!openai) {
-        return this.getMockResponse(userMessage, context);
+        return this.getMockResponse(userMessage, context, userId);
       }
 
-      // Call OpenAI API
+      // Call OpenAI API with function calling
       const completion = await openai.chat.completions.create({
         model: this.model,
         messages: messages,
@@ -144,19 +172,62 @@ class AIChatService {
         max_tokens: this.maxTokens,
         top_p: this.topP,
         presence_penalty: 0.1,
-        frequency_penalty: 0.1
+        frequency_penalty: 0.1,
+        functions: functionSchemas,
+        function_call: 'auto' // Let the model decide when to call functions
       });
 
-      const response = completion.choices[0].message.content;
+      const responseMessage = completion.choices[0].message;
+      let finalResponse = responseMessage.content;
+      let functionCalls = [];
+
+      // Handle function calls if any
+      if (responseMessage.function_call) {
+        const functionName = responseMessage.function_call.name;
+        const functionArgs = JSON.parse(responseMessage.function_call.arguments);
+        
+        console.log(`[AI Chat] Function call: ${functionName}`, functionArgs);
+        
+        // Execute the function
+        const functionResult = await executeFunction(functionName, userId, functionArgs);
+        
+        functionCalls.push({
+          name: functionName,
+          parameters: functionArgs,
+          result: functionResult
+        });
+        
+        // Add function result to messages and get final response
+        messages.push(responseMessage);
+        messages.push({
+          role: 'function',
+          name: functionName,
+          content: JSON.stringify(functionResult)
+        });
+        
+        // Get final response with function result
+        const finalCompletion = await openai.chat.completions.create({
+          model: this.model,
+          messages: messages,
+          temperature: this.temperature,
+          max_tokens: this.maxTokens,
+          top_p: this.topP
+        });
+        
+        finalResponse = finalCompletion.choices[0].message.content;
+      }
 
       // Log for debugging
       console.log(`[AI Chat] User: ${userMessage.substring(0, 50)}...`);
-      console.log(`[AI Chat] Response: ${response.substring(0, 50)}...`);
+      console.log(`[AI Chat] Response: ${finalResponse.substring(0, 50)}...`);
       console.log(`[AI Chat] Tokens used: ${completion.usage?.total_tokens || 'unknown'}`);
+      if (functionCalls.length > 0) {
+        console.log(`[AI Chat] Functions called: ${functionCalls.map(f => f.name).join(', ')}`);
+      }
 
       return {
-        content: response,
-        functionCalls: null, // Will be implemented in Step 2
+        content: finalResponse,
+        functionCalls: functionCalls.length > 0 ? functionCalls : null,
         metadata: {
           model: this.model,
           tokens: completion.usage?.total_tokens
@@ -166,8 +237,8 @@ class AIChatService {
     } catch (error) {
       console.error('AI generation error:', error);
       
-      // Fallback to mock response
-      return this.getMockResponse(userMessage, context);
+      // Fallback to mock response with function calling
+      return this.getMockResponse(userMessage, context, userId);
     }
   }
 
@@ -201,35 +272,383 @@ class AIChatService {
     return prompt;
   }
 
-  getMockResponse(message, context) {
+  async getMockResponse(message, context, userId) {
     const lowerMessage = message.toLowerCase();
     
-    // Mock responses for different query types
-    if (lowerMessage.includes('bmi')) {
+    // Mock function calling for testing without OpenAI
+    let functionCalls = null;
+    let responseContent = '';
+    
+    // Check for sensitive information requests first
+    if (lowerMessage.includes('email') || lowerMessage.includes('password') || 
+        lowerMessage.includes('phone') || lowerMessage.includes('address') || 
+        lowerMessage.includes('social security') || lowerMessage.includes('ssn') ||
+        lowerMessage.includes('credit card') || lowerMessage.includes('bank')) {
+      
+      responseContent = `I understand you're asking about personal information, but for your privacy and security, I don't have access to sensitive data like emails, passwords, phone numbers, or financial information.\n\n`;
+      
+      if (lowerMessage.includes('email')) {
+        responseContent += `If you need to check or update your email address, you can do so in your account settings. I'm here to help with your health and wellness journey instead - things like tracking your fitness progress, meal planning, and wellness insights.\n\n`;
+        responseContent += `Is there anything about your health or nutrition I can help you with today?`;
+      } else if (lowerMessage.includes('password')) {
+        responseContent += `For security reasons, I cannot access or display passwords. If you need to reset your password, please use the "Forgot Password" option on the login page.\n\n`;
+        responseContent += `I'm here to assist with your wellness goals instead. Would you like to check your health metrics or meal plan?`;
+      } else {
+        responseContent += `This helps keep your personal information secure. I'm focused on helping you with health metrics, nutrition planning, and fitness guidance.\n\n`;
+        responseContent += `What wellness-related question can I help you with?`;
+      }
+      
       return {
-        content: `Based on your profile, your **BMI is 24.2**, which is in the normal range (18.5-24.9). This indicates you're at a healthy weight for your height. Keep maintaining your current healthy lifestyle!`,
+        content: responseContent,
         functionCalls: null
       };
     }
     
-    if (lowerMessage.includes('meal') || lowerMessage.includes('breakfast')) {
+    // Check for medical/diagnostic requests
+    if (lowerMessage.includes('diagnose') || lowerMessage.includes('medical condition') || 
+        lowerMessage.includes('disease') || lowerMessage.includes('symptom') ||
+        lowerMessage.includes('pain') || lowerMessage.includes('doctor') ||
+        lowerMessage.includes('medication') || lowerMessage.includes('prescription')) {
+      
+      responseContent = `I appreciate you reaching out, but I'm not qualified to provide medical advice, diagnoses, or recommendations about medications or symptoms.\n\n`;
+      responseContent += `**For medical concerns, please consult with a healthcare professional** who can properly evaluate your situation.\n\n`;
+      responseContent += `What I *can* help with:\n`;
+      responseContent += `• Tracking your general wellness metrics\n`;
+      responseContent += `• Creating healthy meal plans\n`;
+      responseContent += `• Suggesting general exercise routines\n`;
+      responseContent += `• Providing motivation for your fitness goals\n\n`;
+      responseContent += `Is there anything about your general wellness or nutrition I can assist with?`;
+      
       return {
-        content: `Here's a healthy breakfast suggestion:\n\n• **Oatmeal bowl** with berries and nuts\n• **Greek yogurt** (150g) for protein\n• **Whole grain toast** with avocado\n• **Fresh orange juice** or green tea\n\nThis provides approximately **450 calories** with a good balance of protein, carbs, and healthy fats.`,
+        content: responseContent,
         functionCalls: null
       };
     }
     
-    if (lowerMessage.includes('wellness') || lowerMessage.includes('score')) {
+    // Handle greetings and casual conversation
+    if (lowerMessage.match(/^(hi|hello|hey|good morning|good afternoon|good evening)$/i) || 
+        lowerMessage.includes('how are you')) {
+      
+      const userName = context.userContext?.userProfile?.name || 'there';
+      const greetings = [
+        `Hello ${userName}! I'm here to help with your wellness journey. What would you like to know about today?`,
+        `Hi ${userName}! Ready to check on your health progress or plan some nutritious meals?`,
+        `Good to see you, ${userName}! How can I assist with your wellness goals today?`
+      ];
+      
+      responseContent = greetings[Math.floor(Math.random() * greetings.length)];
+      
+      // Add personalized touch if we have their data
+      if (context.userContext?.lastMetrics?.wellnessScore) {
+        responseContent += `\n\nI see your wellness score is ${context.userContext.lastMetrics.wellnessScore}/100. Would you like to know how to improve it?`;
+      }
+      
       return {
-        content: `Your **wellness score is 78/100**, which is good! Here's your breakdown:\n\n• **Physical health:** 20/25\n• **Activity level:** 18/25\n• **Nutrition:** 22/25\n• **Progress:** 18/25\n\nYou're doing well with nutrition! Consider adding more physical activity to boost your score further.`,
+        content: responseContent,
         functionCalls: null
       };
     }
     
-    // Default response
+    // Handle thank you
+    if (lowerMessage.includes('thank') || lowerMessage.includes('thanks')) {
+      responseContent = `You're welcome! I'm always here to support your wellness journey. Is there anything else you'd like to know about your health, nutrition, or fitness?`;
+      
+      return {
+        content: responseContent,
+        functionCalls: null
+      };
+    }
+    
+    // Existing function calling logic continues below...
+    if (lowerMessage.includes('bmi') || lowerMessage.includes('weight') || lowerMessage.includes('wellness')) {
+      // Simulate function call
+      const functionResult = await executeFunction('get_health_metrics', userId, {
+        metric_type: 'all',
+        time_period: 'current'
+      });
+      
+      functionCalls = [{
+        name: 'get_health_metrics',
+        parameters: { metric_type: 'all', time_period: 'current' },
+        result: functionResult
+      }];
+      
+      if (functionResult.data) {
+        const data = functionResult.data;
+        responseContent = `Based on your health profile:\n\n`;
+        
+        if (data.bmi) {
+          responseContent += `• **BMI:** ${data.bmi.value} (${data.bmi.category})\n`;
+        }
+        if (data.weight) {
+          responseContent += `• **Current Weight:** ${data.weight.current} kg\n`;
+          if (data.weight.progressPercentage !== undefined) {
+            responseContent += `• **Progress to Goal:** ${data.weight.progressPercentage}%\n`;
+          }
+        }
+        if (data.wellnessScore) {
+          responseContent += `• **Wellness Score:** ${data.wellnessScore.overall}/100\n`;
+        }
+        
+        responseContent += `\nKeep up the great work on your wellness journey!`;
+      } else {
+        responseContent = functionResult.error || 'Unable to retrieve health metrics at this time.';
+      }
+    }
+    else if (lowerMessage.includes('meal') || lowerMessage.includes('breakfast') || lowerMessage.includes('lunch') || lowerMessage.includes('dinner')) {
+      // Simulate nutrition function call
+      const functionResult = await executeFunction('get_nutrition_data', userId, {
+        type: 'meal_plan',
+        timeframe: 'today'
+      });
+      
+      functionCalls = [{
+        name: 'get_nutrition_data',
+        parameters: { type: 'meal_plan', timeframe: 'today' },
+        result: functionResult
+      }];
+      
+      if (functionResult.data && functionResult.data.data) {
+        responseContent = `Here's your meal plan for today:\n\n`;
+        const meals = functionResult.data.data.meals || [];
+        
+        meals.forEach(meal => {
+          responseContent += `**${meal.type}:**\n`;
+          responseContent += `• ${meal.name}\n`;
+          if (meal.nutrition) {
+            responseContent += `  Calories: ${meal.nutrition.calories}, Protein: ${meal.nutrition.protein}g\n`;
+          }
+          responseContent += '\n';
+        });
+        
+        if (functionResult.data.nutritionSummary) {
+          const summary = functionResult.data.nutritionSummary;
+          responseContent += `**Daily Totals:** ${summary.calories} calories, ${summary.protein} protein, ${summary.carbs} carbs, ${summary.fat} fat`;
+        }
+      } else {
+        responseContent = 'No meal plan found. Would you like me to help you create one?';
+      }
+    }
+    else if (lowerMessage.includes('dietary') || lowerMessage.includes('preference') || lowerMessage.includes('allergi')) {
+      // Get dietary preferences
+      const functionResult = await executeFunction('get_nutrition_data', userId, {
+        type: 'preferences',
+        timeframe: 'today'
+      });
+      
+      functionCalls = [{
+        name: 'get_nutrition_data',
+        parameters: { type: 'preferences' },
+        result: functionResult
+      }];
+      
+      if (functionResult.data && functionResult.data.data) {
+        const prefs = functionResult.data.data;
+        responseContent = `Here are your dietary preferences:\n\n`;
+        
+        if (prefs.dietary && prefs.dietary.length > 0) {
+          responseContent += `**Dietary Preferences:**\n`;
+          prefs.dietary.forEach(pref => {
+            responseContent += `• ${pref}\n`;
+          });
+          responseContent += '\n';
+        }
+        
+        if (prefs.allergies && prefs.allergies.length > 0) {
+          responseContent += `**Allergies:**\n`;
+          prefs.allergies.forEach(allergy => {
+            responseContent += `• ${allergy}\n`;
+          });
+          responseContent += '\n';
+        }
+        
+        responseContent += `**Daily Targets:**\n`;
+        responseContent += `• Calorie Target: ${prefs.calorieTarget} kcal\n`;
+        responseContent += `• Meals per Day: ${prefs.mealFrequency}\n`;
+        
+        if (prefs.cuisinePreferences && prefs.cuisinePreferences.length > 0) {
+          responseContent += `\n**Preferred Cuisines:**\n`;
+          prefs.cuisinePreferences.forEach(cuisine => {
+            responseContent += `• ${cuisine}\n`;
+          });
+        }
+      } else {
+        responseContent = 'No dietary preferences found. Would you like to set up your nutrition preferences? This will help me provide better meal recommendations.';
+      }
+    }
+    else if (lowerMessage.includes('exercise') || lowerMessage.includes('workout') || lowerMessage.includes('fitness')) {
+      // Get exercise recommendations
+      const functionResult = await executeFunction('get_general_insights', userId, {
+        topic: 'exercise'
+      });
+      
+      functionCalls = [{
+        name: 'get_general_insights',
+        parameters: { topic: 'exercise' },
+        result: functionResult
+      }];
+      
+      // Also get user's fitness level for personalized advice
+      const metricsResult = await executeFunction('get_health_metrics', userId, {
+        metric_type: 'all',
+        time_period: 'current'
+      });
+      
+      if (functionResult.data) {
+        responseContent = `Based on your profile, here are exercise recommendations:\n\n`;
+        
+        // Add personalized intro based on activity level
+        if (metricsResult.data && metricsResult.data.goals) {
+          const activityLevel = metricsResult.data.goals.activityLevel;
+          const primaryGoal = metricsResult.data.goals.primary;
+          
+          responseContent += `**Your Profile:**\n`;
+          responseContent += `• Current Activity Level: ${activityLevel}\n`;
+          responseContent += `• Primary Goal: ${primaryGoal.replace(/_/g, ' ')}\n\n`;
+          
+          responseContent += `**Recommended Exercises:**\n`;
+          
+          // Personalized recommendations based on goals
+          if (primaryGoal === 'weight_loss') {
+            responseContent += `• Cardio: 30-45 min brisk walking or cycling (5x/week)\n`;
+            responseContent += `• HIIT: 20 min high-intensity intervals (2x/week)\n`;
+            responseContent += `• Strength: Full body workouts (2x/week)\n`;
+          } else if (primaryGoal === 'muscle_gain') {
+            responseContent += `• Strength Training: 45-60 min (4x/week)\n`;
+            responseContent += `• Compound Exercises: Squats, deadlifts, bench press\n`;
+            responseContent += `• Light Cardio: 20 min walking (2-3x/week)\n`;
+          } else {
+            responseContent += `• Cardio: 30 min moderate activity (3-4x/week)\n`;
+            responseContent += `• Strength: 30 min resistance training (2x/week)\n`;
+            responseContent += `• Flexibility: 10 min stretching daily\n`;
+          }
+          
+          responseContent += `\n**General Tips:**\n`;
+        }
+        
+        // Add general insights
+        functionResult.data.insights.forEach(insight => {
+          responseContent += `• ${insight}\n`;
+        });
+      } else {
+        responseContent = 'Here are general exercise recommendations:\n\n• Start with 150 minutes of moderate exercise per week\n• Include both cardio and strength training\n• Begin with activities you enjoy\n• Gradually increase intensity over time';
+      }
+    }
+    else if (lowerMessage.includes('water') || lowerMessage.includes('hydration') || lowerMessage.includes('drink')) {
+      // Get hydration insights
+      const functionResult = await executeFunction('get_general_insights', userId, {
+        topic: 'hydration'
+      });
+      
+      functionCalls = [{
+        name: 'get_general_insights',
+        parameters: { topic: 'hydration' },
+        result: functionResult
+      }];
+      
+      if (functionResult.data && functionResult.data.insights) {
+        responseContent = `**Hydration Recommendations:**\n\n`;
+        functionResult.data.insights.forEach(insight => {
+          responseContent += `• ${insight}\n`;
+        });
+      } else {
+        responseContent = 'Stay hydrated! Aim for 8-10 glasses of water per day, more if you exercise.';
+      }
+    }
+    else if (lowerMessage.includes('sleep')) {
+      // Get sleep insights
+      const functionResult = await executeFunction('get_general_insights', userId, {
+        topic: 'sleep'
+      });
+      
+      functionCalls = [{
+        name: 'get_general_insights',
+        parameters: { topic: 'sleep' },
+        result: functionResult
+      }];
+      
+      if (functionResult.data && functionResult.data.insights) {
+        responseContent = `**Sleep Recommendations:**\n\n`;
+        functionResult.data.insights.forEach(insight => {
+          responseContent += `• ${insight}\n`;
+        });
+      } else {
+        responseContent = 'Good sleep is crucial! Aim for 7-9 hours per night with consistent sleep and wake times.';
+      }
+    }
+    else if (lowerMessage.includes('progress')) {
+      // Simulate progress function call
+      const functionResult = await executeFunction('get_progress_summary', userId, {
+        goal_type: 'all',
+        include_recommendations: true
+      });
+      
+      functionCalls = [{
+        name: 'get_progress_summary',
+        parameters: { goal_type: 'all', include_recommendations: true },
+        result: functionResult
+      }];
+      
+      if (functionResult.data) {
+        const data = functionResult.data;
+        responseContent = `Here's your progress summary:\n\n`;
+        
+        if (data.weightProgress) {
+          responseContent += `**Weight Progress:**\n`;
+          responseContent += `• Current: ${data.weightProgress.current}\n`;
+          responseContent += `• Target: ${data.weightProgress.target}\n`;
+          responseContent += `• Progress: ${data.weightProgress.progressPercentage}%\n\n`;
+        }
+        
+        if (data.recommendations && data.recommendations.length > 0) {
+          responseContent += `**Recommendations:**\n`;
+          data.recommendations.forEach(rec => {
+            responseContent += `• ${rec}\n`;
+          });
+        }
+      } else {
+        responseContent = 'Unable to retrieve progress data. Please ensure your health profile is complete.';
+      }
+    }
+    else {
+      // More intelligent default response - try to understand intent
+      let responseContent = '';
+      
+      // Check for common question patterns
+      if (lowerMessage.includes('how') || lowerMessage.includes('what') || lowerMessage.includes('can')) {
+        responseContent = `I can help you with:\n\n`;
+        responseContent += `**Health Metrics:**\n`;
+        responseContent += `• Check your BMI, weight, and wellness score\n`;
+        responseContent += `• Track your progress towards goals\n\n`;
+        responseContent += `**Nutrition:**\n`;
+        responseContent += `• View your meal plans and recipes\n`;
+        responseContent += `• Check dietary preferences and allergies\n`;
+        responseContent += `• Get nutritional analysis\n\n`;
+        responseContent += `**Fitness & Wellness:**\n`;
+        responseContent += `• Get exercise recommendations\n`;
+        responseContent += `• Receive sleep and hydration tips\n`;
+        responseContent += `• General wellness insights\n\n`;
+        responseContent += `Try asking: "What's my BMI?", "Show me today's meal plan", or "What exercises should I do?"`;
+      } else {
+        // For other queries, try to be helpful
+        responseContent = `I'm here to help with your wellness journey! You can ask me about:\n\n`;
+        responseContent += `• Your health metrics (BMI, weight, wellness score)\n`;
+        responseContent += `• Meal plans and nutrition\n`;
+        responseContent += `• Exercise recommendations\n`;
+        responseContent += `• Progress tracking\n`;
+        responseContent += `• General wellness tips\n\n`;
+        responseContent += `What would you like to know about?`;
+      }
+      
+      return {
+        content: responseContent,
+        functionCalls: null
+      };
+    }
+    
     return {
-      content: `I understand you're asking about "${message.substring(0, 30)}...". As your wellness assistant, I'm here to help with health metrics, nutrition planning, and fitness guidance. Could you please be more specific about what you'd like to know?`,
-      functionCalls: null
+      content: responseContent,
+      functionCalls: functionCalls
     };
   }
 }
