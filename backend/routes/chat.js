@@ -5,6 +5,8 @@ const Conversation = require('../models/Conversation');
 const HealthProfile = require('../models/HealthProfile');
 const { verifyToken } = require('../middleware/auth');
 const aiChatService = require('../utils/aiChatService');
+const securityValidator = require('../utils/securityValidator');
+const requestTracer = require('../utils/requestTracer');
 
 // Apply rate limiting (if apiLimiter is available)
 // router.use(apiLimiter);
@@ -101,9 +103,43 @@ router.get('/history/:sessionId?', async (req, res) => {
 
 // Send message to AI assistant
 router.post('/message', async (req, res) => {
+  let traceId = null;
+  
   try {
     const { message, sessionId, mode = 'concise' } = req.body;
     
+    // Start tracing
+    traceId = requestTracer.startTrace(sessionId || 'new', req.userId, message);
+    requestTracer.addStep(traceId, 'Request received', { mode });
+    
+    // Security validation
+    requestTracer.addStep(traceId, 'Security validation');
+    const validation = securityValidator.validateMessage(message, req.userId);
+    
+    if (!validation.isValid) {
+      requestTracer.addStep(traceId, 'Security blocked', { 
+        reason: validation.reason,
+        severity: validation.severity 
+      });
+      
+      // Log security event
+      console.warn(`[Security] Blocked message from user ${req.userId}: ${validation.reason}`);
+      
+      // Return suggested response or generic security message
+      const response = validation.suggestedResponse || 
+        'I can only help with wellness-related topics. Please ask about health, nutrition, or fitness.';
+      
+      requestTracer.endTrace(traceId, response);
+      
+      return res.json({
+        response: response,
+        sessionId: sessionId,
+        blocked: true,
+        reason: validation.reason
+      });
+    }
+    
+    // Input validation
     if (!message || message.trim().length === 0) {
       return res.status(400).json({ 
         message: 'Please provide a message' 
@@ -118,6 +154,7 @@ router.post('/message', async (req, res) => {
     }
     
     // Get or create conversation
+    requestTracer.addStep(traceId, 'Get conversation');
     let conversation;
     if (sessionId) {
       conversation = await Conversation.findOne({
@@ -128,6 +165,9 @@ router.post('/message', async (req, res) => {
     
     if (!conversation) {
       conversation = await Conversation.findOrCreateSession(req.userId);
+      requestTracer.addStep(traceId, 'Created new conversation', { 
+        sessionId: conversation.sessionId 
+      });
     }
     
     // Update mode if changed
@@ -136,21 +176,37 @@ router.post('/message', async (req, res) => {
     }
     
     // Add user message
+    requestTracer.addStep(traceId, 'Add user message');
     await conversation.addMessage('user', message);
     
     // Get AI response
+    requestTracer.addStep(traceId, 'Generate AI response');
     const aiResponse = await aiChatService.generateResponse(
       conversation,
       message,
       req.userId
     );
     
+    // Record function calls and tokens
+    if (aiResponse.functionCalls) {
+      aiResponse.functionCalls.forEach(fc => {
+        requestTracer.recordFunctionCall(traceId, fc.name, fc.parameters, fc.result);
+      });
+    }
+    if (aiResponse.metadata?.tokens) {
+      requestTracer.recordTokens(traceId, aiResponse.metadata.tokens);
+    }
+    
     // Add assistant message
+    requestTracer.addStep(traceId, 'Save assistant message');
     await conversation.addMessage(
       'assistant', 
       aiResponse.content,
       aiResponse.functionCalls
     );
+    
+    // End trace
+    requestTracer.endTrace(traceId, aiResponse.content);
     
     res.json({
       response: aiResponse.content,
@@ -161,6 +217,15 @@ router.post('/message', async (req, res) => {
     
   } catch (error) {
     console.error('Message processing error:', error);
+    
+    // Record error in trace
+    if (traceId) {
+      requestTracer.recordError(traceId, error, { 
+        endpoint: '/message',
+        userId: req.userId 
+      });
+      requestTracer.endTrace(traceId, null);
+    }
     
     // Provide user-friendly error messages
     let errorMessage = 'Failed to process your message. Please try again.';
@@ -235,6 +300,9 @@ router.post('/end', async (req, res) => {
     conversation.status = 'ended';
     await conversation.save();
     
+    // Clear security validator history for this session
+    securityValidator.clearHistory();
+    
     res.json({
       message: 'Conversation ended',
       sessionId
@@ -247,5 +315,23 @@ router.post('/end', async (req, res) => {
     });
   }
 });
+
+// Debug endpoint (development only)
+if (process.env.NODE_ENV === 'development') {
+  router.get('/debug/traces', verifyToken, async (req, res) => {
+    const traces = requestTracer.exportTraces();
+    res.json(traces);
+  });
+  
+  router.get('/debug/stats', verifyToken, async (req, res) => {
+    const stats = requestTracer.getStatistics();
+    res.json(stats || { message: 'No statistics available yet' });
+  });
+  
+  router.post('/debug/clear-traces', verifyToken, async (req, res) => {
+    requestTracer.clearTraces();
+    res.json({ message: 'Traces cleared' });
+  });
+}
 
 module.exports = router;

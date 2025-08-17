@@ -538,6 +538,18 @@ const functionImplementations = {
  */
 async function executeFunction(functionName, userId, parameters) {
   try {
+    // Security check - validate the function call
+    const securityValidator = require('./securityValidator');
+    const validation = securityValidator.validateFunctionCall(functionName, parameters, userId);
+    
+    if (!validation.valid) {
+      console.warn(`[Security] Invalid function call: ${functionName} - ${validation.reason}`);
+      return {
+        error: 'Invalid function call parameters',
+        data: null
+      };
+    }
+    
     // Check if function exists
     if (!functionImplementations[functionName]) {
       return {
@@ -554,11 +566,15 @@ async function executeFunction(functionName, userId, parameters) {
       };
     }
     
-    // Execute the function
-    const result = await functionImplementations[functionName](userId, parameters);
+    // Ensure parameters don't contain other user IDs
+    const safeParams = { ...parameters };
+    delete safeParams.userId; // Remove any userId from params
     
-    // Log for debugging
-    console.log(`[Function Call] ${functionName} executed for user ${userId}`);
+    // Execute the function with user's ID only
+    const result = await functionImplementations[functionName](userId, safeParams);
+    
+    // Log for debugging (sanitized)
+    console.log(`[Function Call] ${functionName} executed for user ${userId.substring(0, 8)}...`);
     
     return result;
     
