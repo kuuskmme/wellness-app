@@ -1,6 +1,7 @@
 // backend/utils/aiChatService.js
 const { OpenAI } = require('openai');
 const { functionSchemas, executeFunction } = require('./dataAccessFunctions');
+const ConversationHandlers = require('./conversationHandlers');
 
 // Initialize OpenAI client if API key exists
 const openai = process.env.OPENAI_API_KEY ? new OpenAI({
@@ -129,13 +130,59 @@ Based on your profile, focusing on sleep consistency could make the biggest diff
 
 // Few-shot examples for different query types
 const FEW_SHOT_EXAMPLES = [
+  // 1. Health Metrics
   {
     role: "user",
-    content: "What's my wellness score?"
+    content: "What's my BMI and wellness score?"
   },
   {
     role: "assistant", 
-    content: "Your **wellness score is 82/100**, which is excellent! Here's the breakdown:\n• **BMI component:** 22/25 points\n• **Activity level:** 20/25 points\n• **Progress tracking:** 23/25 points\n• **Healthy habits:** 17/25 points\n\nYou're doing particularly well with progress tracking. To improve further, try adding more regular exercise sessions."
+    content: "Let me check your health metrics!\n\n**📊 BMI: 24.2** (normal weight)\nGreat news! You're in the healthy weight range.\n\n**🌟 Wellness Score: 78/100**\n• Strongest area: nutrition (22/25)\n• Area to improve: activity (18/25)\n\n✨ Good wellness score! Consider adding more physical activity to boost it further."
+  },
+  // 2. Progress
+  {
+    role: "user",
+    content: "How's my weight loss progress?"
+  },
+  {
+    role: "assistant",
+    content: "Here's your progress update:\n\n**🎯 Weight Goal Progress:**\n• Started: 85 kg\n• Current: 78 kg\n• Target: 75 kg\n• Progress: 70% complete!\n\n███████░░░ 70%\n\n🔥 **Incredible progress!** You're over halfway there! At your current rate, you could reach your goal in about 4 weeks.\n\n💚 Keep up the amazing work!"
+  },
+  // 3. Meal Plans
+  {
+    role: "user",
+    content: "What should I eat for breakfast?"
+  },
+  {
+    role: "assistant",
+    content: "Here's a nutritious breakfast suggestion:\n\n**🌅 Breakfast:**\n📍 Greek Yogurt Power Bowl\n• 1 cup Greek yogurt\n• Mixed berries\n• Granola and honey\n• Chia seeds\n\n📊 450 cal | 25g protein | 55g carbs | 12g fat\n⏱️ Prep time: 5 minutes\n\n✅ Perfect! This aligns with your 2000 calorie target and provides sustained energy for your morning!"
+  },
+  // 4. Recipes
+  {
+    role: "user",
+    content: "Give me a healthy dinner recipe"
+  },
+  {
+    role: "assistant",
+    content: "Here's a delicious dinner recipe:\n\n**1. Grilled Chicken & Quinoa Bowl** 🍳\nA protein-packed, balanced meal perfect for dinner.\n\n✅ Suitable for your healthy eating goals\n📂 Category: Main Course\n⏱️ Cook time: 25 minutes\n👍 Moderate prep time\n\n📊 **Nutrition per serving:**\n• Calories: 420\n• Protein: 35g\n• Carbs: 45g\n• Fat: 12g\n\n💪 High protein - perfect for your fitness goals!"
+  },
+  // 5. Nutrition Analysis
+  {
+    role: "user",
+    content: "How's my nutrition today?"
+  },
+  {
+    role: "assistant",
+    content: "Here's your nutritional analysis:\n\n**🔥 Calorie Analysis:**\n• Consumed: 1,850 kcal\n• Target: 2,000 kcal\n• 93% of daily goal\n\n█████████░ 93%\n\n✅ Excellent! You're right on target!\n\n**🥗 Macronutrient Breakdown:**\n• Protein: 95g (30%)\n• Carbs: 220g (45%)\n• Fat: 65g (25%)\n\n**📊 vs. Your Targets:**\n• Protein: ✓ On target!\n• Carbs: ✓ On target!\n• Fat: ✓ On target!\n\n💧 Don't forget hydration! Aim for 2,450ml of water today."
+  },
+  // 6. General Wellness
+  {
+    role: "user",
+    content: "How can I sleep better?"
+  },
+  {
+    role: "assistant",
+    content: "Here's your personalized sleep guidance:\n\n**😴 Sleep Insights:**\n\n• Aim for 7-9 hours of quality sleep each night\n• Maintain a consistent sleep schedule, even on weekends\n• Avoid screens 1 hour before bedtime\n• Create a cool, dark, and quiet sleeping environment\n• High stress can affect sleep - try relaxation techniques before bed\n\n**✅ Action Items:**\n1. Set a consistent bedtime tonight\n2. Create a 30-min wind-down routine\n3. Remove screens from bedroom\n\n💚 Remember: Good sleep is the foundation of wellness. You've got this!"
   }
 ];
 
@@ -145,6 +192,72 @@ class AIChatService {
     this.temperature = 0.6; // Lower for consistency
     this.maxTokens = 500;
     this.topP = 0.95; // For relevance
+  }
+
+  /**
+   * Detect conversation type from user message
+   */
+  detectConversationType(message) {
+    const lowerMessage = message.toLowerCase();
+    
+    // Check for specific conversation types
+    if (lowerMessage.includes('bmi') || lowerMessage.includes('weight') || 
+        lowerMessage.includes('wellness score') || lowerMessage.includes('health metric')) {
+      return 'health_metrics';
+    }
+    
+    if (lowerMessage.includes('progress') || lowerMessage.includes('goal') || 
+        lowerMessage.includes('achievement') || lowerMessage.includes('how am i doing')) {
+      return 'progress';
+    }
+    
+    if (lowerMessage.includes('meal plan') || lowerMessage.includes('breakfast') || 
+        lowerMessage.includes('lunch') || lowerMessage.includes('dinner') || 
+        lowerMessage.includes('what should i eat') || lowerMessage.includes('meal')) {
+      return 'meal_plans';
+    }
+    
+    if (lowerMessage.includes('recipe') || lowerMessage.includes('cook') || 
+        lowerMessage.includes('dish') || lowerMessage.includes('ingredient')) {
+      return 'recipes';
+    }
+    
+    if (lowerMessage.includes('nutrition') || lowerMessage.includes('calorie') || 
+        lowerMessage.includes('protein') || lowerMessage.includes('carb') || 
+        lowerMessage.includes('macro') || lowerMessage.includes('nutritional')) {
+      return 'nutrition_analysis';
+    }
+    
+    if (lowerMessage.includes('exercise') || lowerMessage.includes('workout') || 
+        lowerMessage.includes('sleep') || lowerMessage.includes('stress') || 
+        lowerMessage.includes('water') || lowerMessage.includes('hydration') ||
+        lowerMessage.includes('wellness') || lowerMessage.includes('health tip')) {
+      return 'general_wellness';
+    }
+    
+    return null;
+  }
+
+  /**
+   * Use specialized handler for detected conversation type
+   */
+  async handleWithSpecializedHandler(conversationType, userId, message, context) {
+    switch(conversationType) {
+      case 'health_metrics':
+        return await ConversationHandlers.handleHealthMetrics(userId, message, context);
+      case 'progress':
+        return await ConversationHandlers.handleProgress(userId, message, context);
+      case 'meal_plans':
+        return await ConversationHandlers.handleMealPlans(userId, message, context);
+      case 'recipes':
+        return await ConversationHandlers.handleRecipes(userId, message, context);
+      case 'nutrition_analysis':
+        return await ConversationHandlers.handleNutritionAnalysis(userId, message, context);
+      case 'general_wellness':
+        return await ConversationHandlers.handleGeneralWellness(userId, message, context);
+      default:
+        return null;
+    }
   }
 
   async generateResponse(conversation, userMessage, userId) {
@@ -275,6 +388,26 @@ class AIChatService {
   async getMockResponse(message, context, userId) {
     const lowerMessage = message.toLowerCase();
     
+    // Detect conversation type
+    const conversationType = this.detectConversationType(message);
+    
+    // If we have a specialized handler, use it
+    if (conversationType) {
+      const handlerResult = await this.handleWithSpecializedHandler(
+        conversationType, 
+        userId, 
+        message, 
+        context.userContext
+      );
+      
+      if (handlerResult) {
+        return {
+          content: handlerResult.response,
+          functionCalls: handlerResult.functionCalls
+        };
+      }
+    }
+    
     // Mock function calling for testing without OpenAI
     let functionCalls = null;
     let responseContent = '';
@@ -359,8 +492,11 @@ class AIChatService {
       };
     }
     
-    // Existing function calling logic continues below...
-    if (lowerMessage.includes('bmi') || lowerMessage.includes('weight') || lowerMessage.includes('wellness')) {
+    // Fallback handlers for when specialized handlers aren't used or available
+    // These provide basic responses without the advanced personalization
+    
+    // Existing health metrics handler (keeping the old logic as fallback)
+    else if (lowerMessage.includes('bmi') || lowerMessage.includes('weight') || lowerMessage.includes('wellness')) {
       // Simulate function call
       const functionResult = await executeFunction('get_health_metrics', userId, {
         metric_type: 'all',
@@ -476,6 +612,40 @@ class AIChatService {
         responseContent = 'No dietary preferences found. Would you like to set up your nutrition preferences? This will help me provide better meal recommendations.';
       }
     }
+    else if (lowerMessage.includes('progress')) {
+      // Simulate progress function call
+      const functionResult = await executeFunction('get_progress_summary', userId, {
+        goal_type: 'all',
+        include_recommendations: true
+      });
+      
+      functionCalls = [{
+        name: 'get_progress_summary',
+        parameters: { goal_type: 'all', include_recommendations: true },
+        result: functionResult
+      }];
+      
+      if (functionResult.data) {
+        const data = functionResult.data;
+        responseContent = `Here's your progress summary:\n\n`;
+        
+        if (data.weightProgress) {
+          responseContent += `**Weight Progress:**\n`;
+          responseContent += `• Current: ${data.weightProgress.current}\n`;
+          responseContent += `• Target: ${data.weightProgress.target}\n`;
+          responseContent += `• Progress: ${data.weightProgress.progressPercentage}%\n\n`;
+        }
+        
+        if (data.recommendations && data.recommendations.length > 0) {
+          responseContent += `**Recommendations:**\n`;
+          data.recommendations.forEach(rec => {
+            responseContent += `• ${rec}\n`;
+          });
+        }
+      } else {
+        responseContent = 'Unable to retrieve progress data. Please ensure your health profile is complete.';
+      }
+    }
     else if (lowerMessage.includes('exercise') || lowerMessage.includes('workout') || lowerMessage.includes('fitness')) {
       // Get exercise recommendations
       const functionResult = await executeFunction('get_general_insights', userId, {
@@ -576,79 +746,26 @@ class AIChatService {
         responseContent = 'Good sleep is crucial! Aim for 7-9 hours per night with consistent sleep and wake times.';
       }
     }
-    else if (lowerMessage.includes('progress')) {
-      // Simulate progress function call
-      const functionResult = await executeFunction('get_progress_summary', userId, {
-        goal_type: 'all',
-        include_recommendations: true
-      });
-      
-      functionCalls = [{
-        name: 'get_progress_summary',
-        parameters: { goal_type: 'all', include_recommendations: true },
-        result: functionResult
-      }];
-      
-      if (functionResult.data) {
-        const data = functionResult.data;
-        responseContent = `Here's your progress summary:\n\n`;
-        
-        if (data.weightProgress) {
-          responseContent += `**Weight Progress:**\n`;
-          responseContent += `• Current: ${data.weightProgress.current}\n`;
-          responseContent += `• Target: ${data.weightProgress.target}\n`;
-          responseContent += `• Progress: ${data.weightProgress.progressPercentage}%\n\n`;
-        }
-        
-        if (data.recommendations && data.recommendations.length > 0) {
-          responseContent += `**Recommendations:**\n`;
-          data.recommendations.forEach(rec => {
-            responseContent += `• ${rec}\n`;
-          });
-        }
-      } else {
-        responseContent = 'Unable to retrieve progress data. Please ensure your health profile is complete.';
-      }
-    }
     else {
-      // More intelligent default response - try to understand intent
-      let responseContent = '';
-      
-      // Check for common question patterns
-      if (lowerMessage.includes('how') || lowerMessage.includes('what') || lowerMessage.includes('can')) {
-        responseContent = `I can help you with:\n\n`;
-        responseContent += `**Health Metrics:**\n`;
-        responseContent += `• Check your BMI, weight, and wellness score\n`;
-        responseContent += `• Track your progress towards goals\n\n`;
-        responseContent += `**Nutrition:**\n`;
-        responseContent += `• View your meal plans and recipes\n`;
-        responseContent += `• Check dietary preferences and allergies\n`;
-        responseContent += `• Get nutritional analysis\n\n`;
-        responseContent += `**Fitness & Wellness:**\n`;
-        responseContent += `• Get exercise recommendations\n`;
-        responseContent += `• Receive sleep and hydration tips\n`;
-        responseContent += `• General wellness insights\n\n`;
-        responseContent += `Try asking: "What's my BMI?", "Show me today's meal plan", or "What exercises should I do?"`;
-      } else {
-        // For other queries, try to be helpful
-        responseContent = `I'm here to help with your wellness journey! You can ask me about:\n\n`;
-        responseContent += `• Your health metrics (BMI, weight, wellness score)\n`;
-        responseContent += `• Meal plans and nutrition\n`;
-        responseContent += `• Exercise recommendations\n`;
-        responseContent += `• Progress tracking\n`;
-        responseContent += `• General wellness tips\n\n`;
-        responseContent += `What would you like to know about?`;
-      }
-      
-      return {
-        content: responseContent,
-        functionCalls: null
-      };
+      // Default helpful response
+      responseContent = `I can help you with:\n\n`;
+      responseContent += `**Health Metrics:**\n`;
+      responseContent += `• Check your BMI, weight, and wellness score\n`;
+      responseContent += `• Track your progress towards goals\n\n`;
+      responseContent += `**Nutrition:**\n`;
+      responseContent += `• View your meal plans and recipes\n`;
+      responseContent += `• Check dietary preferences and allergies\n`;
+      responseContent += `• Get nutritional analysis\n\n`;
+      responseContent += `**Fitness & Wellness:**\n`;
+      responseContent += `• Get exercise recommendations\n`;
+      responseContent += `• Receive sleep and hydration tips\n`;
+      responseContent += `• General wellness insights\n\n`;
+      responseContent += `Try asking: "What's my BMI?", "Show me today's meal plan", or "What exercises should I do?"`;
     }
     
     return {
       content: responseContent,
-      functionCalls: functionCalls
+      functionCalls: null
     };
   }
 }
