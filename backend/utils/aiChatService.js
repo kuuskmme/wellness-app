@@ -885,144 +885,416 @@ class AIChatService {
   }
 
   /**
-   * Handle follow-up questions with context
-   */
-  async handleFollowUp(message, context, userId, referenceInfo) {
-    const resolved = referenceInfo.resolvedMessage;
-    const lowerMessage = message.toLowerCase();
-    console.log(`[Follow-up] Type: ${referenceInfo.referenceType}, Message: "${message}" → "${resolved}"`);
-    
-    // Handle specific follow-up types
-    if (referenceInfo.referenceType === 'evaluation') {
-      return this.handleEvaluation(context, userId);
-    }
-    
-    if (referenceInfo.referenceType === 'explanation') {
-      return this.handleExplanation(context, userId);
-    }
-    
-    if (referenceInfo.referenceType === 'improvement') {
-      return this.handleImprovementRequest(context, userId);
-    }
-    
-    // Check for improvement questions even without perfect reference detection
-    if (lowerMessage.includes('improve') || lowerMessage.includes('better') || 
-        lowerMessage.includes('increase') || lowerMessage.includes('boost') ||
-        lowerMessage.includes('enhance') || lowerMessage.includes('optimize')) {
-      return this.handleImprovementRequest(context, userId);
-    }
-    
-    // Get the appropriate response based on resolved message
-    const response = await this.getMockResponse(resolved, context, userId, null);
-    
-    // Add acknowledgment of the reference
-    const acknowledgments = {
-      'elaboration': 'Let me provide more details:\n\n',
-      'explanation': 'Let me explain:\n\n',
-      'evaluation': 'Let me evaluate that:\n\n',
-      'modification': 'I\'ll help you with that change:\n\n',
-      'permission': 'Regarding your question:\n\n'
-    };
-    
-    const prefix = acknowledgments[referenceInfo.referenceType] || 'About that:\n\n';
-    
-    if (response.content) {
-      response.content = prefix + response.content;
-    }
-    
-    return response;
+ * Handle follow-up questions with context
+ */
+async handleFollowUp(message, context, userId, referenceInfo) {
+  const resolved = referenceInfo.resolvedMessage;
+  const lowerMessage = message.toLowerCase();
+  console.log(`[Follow-up] Type: ${referenceInfo.referenceType}, Message: "${message}" → "${resolved}"`);
+  
+  // Check if this is an evaluation question about adequacy
+  if (referenceInfo.referenceType === 'evaluation' || 
+      lowerMessage.includes('enough') || 
+      lowerMessage.includes('good') || 
+      lowerMessage.includes('adequate') ||
+      lowerMessage.includes('sufficient') ||
+      lowerMessage.includes('too much') ||
+      lowerMessage.includes('too little')) {
+    return this.handleEvaluation(context, userId, message);
   }
+  
+  // Handle specific follow-up types
+  if (referenceInfo.referenceType === 'explanation') {
+    return this.handleExplanation(context, userId);
+  }
+  
+  if (referenceInfo.referenceType === 'improvement') {
+    return this.handleImprovementRequest(context, userId);
+  }
+  
+  // Check for improvement questions even without perfect reference detection
+  if (lowerMessage.includes('improve') || lowerMessage.includes('better') || 
+      lowerMessage.includes('increase') || lowerMessage.includes('boost') ||
+      lowerMessage.includes('enhance') || lowerMessage.includes('optimize')) {
+    return this.handleImprovementRequest(context, userId);
+  }
+  
+  // For other follow-ups, don't just repeat - provide additional context
+  const lastTopic = contextManager.currentTopic;
+  const lastEntities = contextManager.mentionedEntities;
+  
+  // If we're still talking about the same topic, provide new information
+  if (lastTopic === 'meal_plans' && lastEntities.meal) {
+    return this.handleMealFollowUp(context, userId, message);
+  }
+  
+  // Default: Get appropriate response but don't just repeat
+  const response = await this.getMockResponse(resolved, context, userId, null);
+  
+  // Add acknowledgment of the reference
+  const acknowledgments = {
+    'elaboration': 'Let me provide more details:\n\n',
+    'explanation': 'Let me explain:\n\n',
+    'evaluation': 'Let me evaluate that:\n\n',
+    'modification': 'I\'ll help you with that change:\n\n',
+    'permission': 'Regarding your question:\n\n'
+  };
+  
+  const prefix = acknowledgments[referenceInfo.referenceType] || 'About that:\n\n';
+  
+  if (response.content) {
+    response.content = prefix + response.content;
+  }
+  
+  return response;
+}
 
-  /**
-   * Handle evaluation questions like "is that good?"
-   */
-  async handleEvaluation(context, userId) {
-    const lastMetric = contextManager.mentionedEntities.metric;
-    const lastMeal = contextManager.mentionedEntities.meal;
-    let responseContent = '';
+
+/**
+ * Handle evaluation questions like "is that enough?" "is that good?"
+ */
+async handleEvaluation(context, userId, originalMessage = '') {
+  const lowerMessage = originalMessage.toLowerCase();
+  const lastTopic = contextManager.currentTopic;
+  const lastEntities = contextManager.mentionedEntities;
+  let responseContent = '';
+  
+  // Get user's profile for personalized evaluation
+  const profileResult = await executeFunction('get_health_metrics', userId, {
+    metric_type: 'all',
+    time_period: 'current'
+  });
+  
+  const userWeight = profileResult.data?.weight?.current || 73;
+  const userGoals = profileResult.data?.goals?.primary || 'general_fitness';
+  const userName = context.userProfile?.name || 'User';
+  
+  // Check if evaluating protein specifically
+  if (lowerMessage.includes('protein') || 
+      (lastTopic === 'meal_plans' && contextManager.mentionedEntities.meal)) {
     
-    // Get user's latest metrics for context
-    const metricsResult = await executeFunction('get_health_metrics', userId, {
-      metric_type: 'all',
-      time_period: 'current'
+    // Get the last conversation messages to find protein amount
+    let proteinAmount = 0;
+    let mealName = '';
+    let mealType = lastEntities.meal || '';
+    
+    // Try to get protein from the last assistant response
+    const conversationHistory = context.messages || [];
+    
+    // Look through recent messages for nutrition information
+    for (let i = conversationHistory.length - 1; i >= 0 && i >= conversationHistory.length - 4; i--) {
+      const msg = conversationHistory[i];
+      if (msg && msg.role === 'assistant' && msg.content) {
+        // Look for various protein formats in the message
+        const patterns = [
+          /Protein:\s*(\d+)g/i,           // "Protein: 12g"
+          /(\d+)g\s+protein/i,             // "12g protein"
+          /protein\s*[\(:]?\s*(\d+)g/i,   // "protein (12g)" or "protein: 12g"
+          /•\s*Protein:\s*(\d+)g/i,       // "• Protein: 12g"
+        ];
+        
+        for (const pattern of patterns) {
+          const match = msg.content.match(pattern);
+          if (match) {
+            proteinAmount = parseInt(match[1]);
+            break;
+          }
+        }
+        
+        // Also try to identify the meal being discussed
+        if (!mealType) {
+          if (msg.content.includes('breakfast') || msg.content.includes('Breakfast')) {
+            mealType = 'breakfast';
+          } else if (msg.content.includes('lunch') || msg.content.includes('Lunch')) {
+            mealType = 'lunch';
+          } else if (msg.content.includes('dinner') || msg.content.includes('Dinner')) {
+            mealType = 'dinner';
+          } else if (msg.content.includes('snack') || msg.content.includes('Snack')) {
+            mealType = 'snack';
+          }
+        }
+        
+        // Try to get meal name
+        const mealNameMatch = msg.content.match(/(?:your|in your)\s+([^:]+)\s+(?:breakfast|lunch|dinner|snack)/i);
+        if (mealNameMatch) {
+          mealName = mealNameMatch[1].trim();
+        }
+        
+        if (proteinAmount > 0) break;
+      }
+    }
+    
+    // If we still don't have protein amount, check if we just showed meal plan
+    if (proteinAmount === 0 && lastTopic === 'meal_plans') {
+      // Get today's meal plan to find the specific meal's protein
+      const nutritionResult = await executeFunction('get_nutrition_data', userId, {
+        type: 'meal_plan',
+        timeframe: 'today'
+      });
+      
+      if (nutritionResult.data?.data?.meals && mealType) {
+        const meal = nutritionResult.data.data.meals.find(m => 
+          m.type.toLowerCase() === mealType.toLowerCase()
+        );
+        if (meal && meal.nutrition) {
+          proteinAmount = meal.nutrition.protein || 0;
+          mealName = meal.name || mealName;
+        }
+      }
+    }
+    
+    // Now build the evaluation response
+    if (proteinAmount === 0) {
+      // If we still can't find the protein amount, ask for clarification
+      responseContent = `${userName}, I need to know which meal you're asking about to evaluate the protein content.\n\n`;
+      responseContent += `Could you tell me:\n`;
+      responseContent += `• Which meal are you referring to? (breakfast, lunch, dinner, or snack)\n`;
+      responseContent += `• Or how much protein it contains?\n\n`;
+      responseContent += `Once I know this, I can tell you if it's adequate for your goals.`;
+      
+      return { content: responseContent, functionCalls: null };
+    }
+    
+    // We have protein amount, now evaluate it
+    responseContent = `${userName}, let me evaluate if ${proteinAmount}g of protein`;
+    if (mealName) {
+      responseContent += ` in your ${mealName}`;
+    } else if (mealType) {
+      responseContent += ` for ${mealType}`;
+    }
+    responseContent += ` is enough:\n\n`;
+    
+    responseContent += `**Protein Assessment:**\n\n`;
+    
+    // Calculate recommendations based on meal type
+    let recommendation = '';
+    let isAdequate = false;
+    
+    if (mealType === 'breakfast') {
+      isAdequate = proteinAmount >= 10 && proteinAmount <= 30;
+      
+      responseContent += `For breakfast, ${proteinAmount}g of protein is:\n`;
+      if (proteinAmount < 10) {
+        responseContent += `• ⚠️ **Low** - Aim for at least 10-15g for breakfast\n`;
+        recommendation = 'Consider adding Greek yogurt, eggs, or protein powder to boost protein';
+      } else if (proteinAmount >= 10 && proteinAmount <= 20) {
+        responseContent += `• ✅ **Good** - Adequate for morning satiety\n`;
+        recommendation = 'This will keep you satisfied until lunch';
+      } else if (proteinAmount > 20) {
+        responseContent += `• ✅ **Excellent** - Great protein-rich start to your day\n`;
+        recommendation = 'Perfect for muscle maintenance and sustained energy';
+      }
+    } else if (mealType === 'lunch') {
+      isAdequate = proteinAmount >= 25 && proteinAmount <= 40;
+      
+      responseContent += `For lunch, ${proteinAmount}g of protein is:\n`;
+      if (proteinAmount < 25) {
+        responseContent += `• ⚠️ **Low** - Aim for 25-35g at lunch\n`;
+        recommendation = 'Add lean meat, fish, tofu, or legumes to increase protein';
+      } else if (proteinAmount >= 25 && proteinAmount <= 40) {
+        responseContent += `• ✅ **Perfect** - Ideal for sustained afternoon energy\n`;
+        recommendation = 'This supports muscle recovery and prevents afternoon energy dips';
+      } else {
+        responseContent += `• ✅ **High** - Excellent protein intake\n`;
+        recommendation = 'Great for muscle building and recovery';
+      }
+    } else if (mealType === 'dinner') {
+      isAdequate = proteinAmount >= 30 && proteinAmount <= 45;
+      
+      responseContent += `For dinner, ${proteinAmount}g of protein is:\n`;
+      if (proteinAmount < 30) {
+        responseContent += `• ⚠️ **Low** - Aim for 30-40g at dinner\n`;
+        recommendation = 'Consider a larger protein portion or add a protein side';
+      } else if (proteinAmount >= 30 && proteinAmount <= 45) {
+        responseContent += `• ✅ **Excellent** - Perfect for overnight recovery\n`;
+        recommendation = 'Supports muscle repair and growth during sleep';
+      } else {
+        responseContent += `• ✅ **High** - Great for active individuals\n`;
+        recommendation = 'Excellent if you exercise regularly or are building muscle';
+      }
+    } else if (mealType === 'snack') {
+      isAdequate = proteinAmount >= 5 && proteinAmount <= 20;
+      
+      responseContent += `For a snack, ${proteinAmount}g of protein is:\n`;
+      if (proteinAmount < 5) {
+        responseContent += `• ⚠️ **Low** - Aim for 5-15g for a protein snack\n`;
+        recommendation = 'Consider nuts, Greek yogurt, or a protein shake';
+      } else if (proteinAmount >= 5 && proteinAmount <= 15) {
+        responseContent += `• ✅ **Perfect** - Good protein boost between meals\n`;
+        recommendation = 'Helps maintain steady energy and reduce hunger';
+      } else {
+        responseContent += `• ✅ **High** - Almost a meal-level protein\n`;
+        recommendation = 'Great for post-workout recovery';
+      }
+    } else {
+      // General evaluation if meal type unknown
+      const dailyTarget = Math.round(userWeight * 1.6);
+      const percentOfDaily = Math.round((proteinAmount / dailyTarget) * 100);
+      
+      responseContent += `${proteinAmount}g provides ${percentOfDaily}% of your daily target (${dailyTarget}g)\n`;
+      isAdequate = proteinAmount >= 15;
+      
+      if (proteinAmount < 10) {
+        responseContent += `• ⚠️ **Low** - Consider adding more protein\n`;
+        recommendation = 'Add protein-rich foods to meet your needs';
+      } else if (proteinAmount >= 10 && proteinAmount <= 25) {
+        responseContent += `• ✅ **Moderate** - Good for a meal or substantial snack\n`;
+        recommendation = 'Adequate for most meals';
+      } else {
+        responseContent += `• ✅ **High** - Excellent protein content\n`;
+        recommendation = 'Great for muscle building and recovery';
+      }
+    }
+    
+    // Add context for user's specific goals
+    responseContent += `\n**For Your Goals (${userGoals.replace(/_/g, ' ')}):**\n`;
+    
+    if (userGoals === 'muscle_gain') {
+      const targetPerMeal = Math.round(userWeight * 0.5); // Higher for muscle gain
+      responseContent += `• Target: ${targetPerMeal}g per main meal\n`;
+      responseContent += proteinAmount >= targetPerMeal * 0.8 ? 
+        `• ✅ You're on track for muscle building!\n` : 
+        `• Consider increasing portion or adding protein supplements\n`;
+    } else if (userGoals === 'weight_loss') {
+      const targetPerMeal = Math.round(userWeight * 0.4); // Moderate for weight loss
+      responseContent += `• Protein helps preserve muscle during weight loss\n`;
+      responseContent += `• ${proteinAmount}g is ${proteinAmount >= targetPerMeal * 0.7 ? 'good for satiety and muscle preservation' : 'could be higher for better satiety'}\n`;
+    } else {
+      const targetPerMeal = Math.round(userWeight * 0.3); // Standard recommendation
+      responseContent += `• General recommendation: ${targetPerMeal}g per main meal\n`;
+      responseContent += `• ${proteinAmount}g is ${proteinAmount >= targetPerMeal * 0.7 ? 'adequate' : 'on the lower side'}\n`;
+    }
+    
+    // Add the recommendation
+    if (recommendation) {
+      responseContent += `\n**💡 Recommendation:**\n${recommendation}\n`;
+    }
+    
+    // Add daily context
+    const nutritionResult = await executeFunction('get_nutrition_data', userId, {
+      type: 'meal_plan',
+      timeframe: 'today'
     });
     
-    if (lastMetric === 'BMI' || (metricsResult.data && metricsResult.data.bmi)) {
-      const bmi = metricsResult.data?.bmi?.value || 22.3;
+    if (nutritionResult.data?.nutritionSummary) {
+      const totalDailyProtein = parseInt(nutritionResult.data.nutritionSummary.protein) || 0;
+      const minDaily = Math.round(userWeight * 0.8);
+      const optimalDaily = Math.round(userWeight * 1.6);
       
-      responseContent = `Yes, your BMI of **${bmi}** is good! Here's why:\n\n`;
-      
-      if (bmi >= 18.5 && bmi < 25) {
-        responseContent += `✅ **You're in the healthy range** (18.5-24.9)\n`;
-        responseContent += `• Lower risk of heart disease and diabetes\n`;
-        responseContent += `• Good balance between muscle and fat\n`;
-        responseContent += `• Optimal range for most physical activities\n\n`;
-        responseContent += `**Keep doing what you're doing!** Your current weight management is working well.`;
-      } else if (bmi < 18.5) {
-        responseContent = `Your BMI of **${bmi}** is below the healthy range:\n\n`;
-        responseContent += `⚠️ **Underweight** (below 18.5)\n`;
-        responseContent += `• May indicate insufficient nutrition\n`;
-        responseContent += `• Could affect energy levels and immune system\n\n`;
-        responseContent += `**Recommendation:** Consider increasing caloric intake with nutrient-dense foods.`;
-      } else if (bmi >= 25 && bmi < 30) {
-        responseContent = `Your BMI of **${bmi}** is slightly elevated:\n\n`;
-        responseContent += `⚠️ **Overweight range** (25-29.9)\n`;
-        responseContent += `• Slightly increased health risks\n`;
-        responseContent += `• May benefit from modest weight loss\n\n`;
-        responseContent += `**Recommendation:** Small changes to diet and exercise can help you reach the healthy range.`;
-      } else {
-        responseContent = `Your BMI of **${bmi}** indicates obesity:\n\n`;
-        responseContent += `⚠️ **Needs attention** (30+)\n`;
-        responseContent += `• Increased risk of health complications\n`;
-        responseContent += `• Would benefit from weight management\n\n`;
-        responseContent += `**Recommendation:** Consider consulting with a healthcare provider for a personalized plan.`;
-      }
-    } else if (lastMetric === 'wellness score' || contextManager.currentTopic === 'health_metrics') {
-      const score = metricsResult.data?.wellnessScore?.overall || 90;
-      
-      if (score >= 80) {
-        responseContent = `**Excellent!** Your wellness score of ${score}/100 is fantastic! 🎉\n\n`;
-        responseContent += `This means:\n`;
-        responseContent += `• You're maintaining healthy habits consistently\n`;
-        responseContent += `• Your lifestyle choices are supporting your health\n`;
-        responseContent += `• You're on track with your wellness goals\n\n`;
-        responseContent += `Keep up the amazing work!`;
-      } else if (score >= 60) {
-        responseContent = `**Good!** Your wellness score of ${score}/100 is solid.\n\n`;
-        responseContent += `This indicates:\n`;
-        responseContent += `• You're doing well in most areas\n`;
-        responseContent += `• There's room for improvement\n`;
-        responseContent += `• You have a good foundation to build on\n\n`;
-        responseContent += `Focus on your weakest area to boost your score further.`;
-      } else {
-        responseContent = `Your wellness score of ${score}/100 has room for improvement.\n\n`;
-        responseContent += `This suggests:\n`;
-        responseContent += `• Several areas need attention\n`;
-        responseContent += `• Small changes can make a big difference\n\n`;
-        responseContent += `Let's work on improving one area at a time!`;
-      }
-    } else if (lastMeal) {
-      responseContent = `Yes, that's a good choice for ${lastMeal}!\n\n`;
-      responseContent += `It provides:\n`;
-      responseContent += `• Balanced macronutrients\n`;
-      responseContent += `• Good energy for your day\n`;
-      responseContent += `• Aligns with your calorie goals\n\n`;
-      responseContent += `Feel free to enjoy it!`;
-    } else {
-      responseContent = `Based on what we just discussed, yes, that looks good!\n\n`;
-      responseContent += `You're on the right track with your wellness journey. `;
-      responseContent += `Keep making those positive choices!`;
+      responseContent += `\n**Daily Context:**\n`;
+      responseContent += `Your total protein today: ${totalDailyProtein}g\n`;
+      responseContent += `• Minimum needed: ${minDaily}g\n`;
+      responseContent += `• Optimal for active lifestyle: ${optimalDaily}g\n`;
+      responseContent += totalDailyProtein >= minDaily ? 
+        `• ✅ Meeting daily needs!` : 
+        `• Consider adding protein to other meals`;
     }
     
     return {
       content: responseContent,
-      functionCalls: metricsResult.data ? [{
-        name: 'get_health_metrics',
-        parameters: { metric_type: 'all', time_period: 'current' },
-        result: metricsResult
-      }] : null
+      functionCalls: [{
+        name: 'get_nutrition_data',
+        parameters: { type: 'meal_plan', timeframe: 'today' },
+        result: nutritionResult
+      }]
     };
   }
+  
+  // Check if evaluating calories
+  if (lowerMessage.includes('calorie') || lowerMessage.includes('calories')) {
+    const calorieMatch = context.lastResponse?.match(/(\d+)\s*(kcal|cal)/);
+    const calories = calorieMatch ? parseInt(calorieMatch[1]) : 0;
+    
+    responseContent = `Let me evaluate if ${calories} calories is appropriate:\n\n`;
+    
+    const dailyTarget = profileResult.data?.calorieTarget || 2000;
+    const percentOfDaily = Math.round((calories / dailyTarget) * 100);
+    
+    responseContent += `**Calorie Assessment:**\n`;
+    responseContent += `• This is ${percentOfDaily}% of your ${dailyTarget} daily target\n`;
+    
+    if (percentOfDaily < 15) {
+      responseContent += `• ✅ Light - good for a snack\n`;
+    } else if (percentOfDaily >= 15 && percentOfDaily <= 25) {
+      responseContent += `• ✅ Moderate - appropriate for breakfast\n`;
+    } else if (percentOfDaily >= 25 && percentOfDaily <= 35) {
+      responseContent += `• ✅ Substantial - good for lunch or dinner\n`;
+    } else {
+      responseContent += `• ⚠️ High - consider portion size\n`;
+    }
+    
+    return { content: responseContent, functionCalls: null };
+  }
+  
+  // Check if evaluating BMI
+  if (lastEntities.metric === 'BMI' || lowerMessage.includes('bmi')) {
+    const bmi = profileResult.data?.bmi?.value || 22.3;
+    
+    responseContent = `Yes, your BMI of **${bmi}** is `;
+    
+    if (bmi < 18.5) {
+      responseContent += `low (underweight category). Consider increasing caloric intake with nutrient-dense foods.\n`;
+    } else if (bmi >= 18.5 && bmi < 25) {
+      responseContent += `✅ **good!** You're in the healthy weight range (18.5-24.9).\n\n`;
+      responseContent += `This indicates:\n`;
+      responseContent += `• Lower risk of chronic diseases\n`;
+      responseContent += `• Good metabolic health\n`;
+      responseContent += `• Healthy body composition\n`;
+    } else if (bmi >= 25 && bmi < 30) {
+      responseContent += `slightly elevated (overweight category). Small lifestyle changes can help.\n`;
+    } else {
+      responseContent += `high. Consider working with a healthcare provider on a weight management plan.\n`;
+    }
+    
+    return { content: responseContent, functionCalls: null };
+  }
+  
+  // Default evaluation response
+  responseContent = `Based on what we just discussed, `;
+  
+  if (lastTopic === 'health_metrics') {
+    responseContent += `your health metrics are within normal ranges. Keep up the good work!`;
+  } else if (lastTopic === 'meal_plans') {
+    responseContent += `your meal plan is well-balanced and meets nutritional guidelines.`;
+  } else {
+    responseContent += `that looks good! Would you like more specific details?`;
+  }
+  
+  return { content: responseContent, functionCalls: null };
+}
+
+/**
+ * Handle meal-specific follow-ups
+ */
+async handleMealFollowUp(context, userId, message) {
+  const lowerMessage = message.toLowerCase();
+  const lastMeal = contextManager.mentionedEntities.meal;
+  
+  // Don't repeat - provide new information
+  let responseContent = `About your ${lastMeal || 'meal'}:\n\n`;
+  
+  if (lowerMessage.includes('alternative') || lowerMessage.includes('different') || 
+      lowerMessage.includes('something else')) {
+    responseContent += `**Alternative Options:**\n`;
+    responseContent += `• For similar protein: Greek Yogurt Bowl with nuts\n`;
+    responseContent += `• For similar calories: Scrambled Eggs with Toast\n`;
+    responseContent += `• For lower carbs: Protein Smoothie\n`;
+    responseContent += `\nWould you like me to update your meal plan with one of these?`;
+  } else if (lowerMessage.includes('when') || lowerMessage.includes('time')) {
+    responseContent += `**Optimal Timing:**\n`;
+    responseContent += `• Best consumed: 7:00 AM - 9:00 AM\n`;
+    responseContent += `• Allows 3-4 hours before lunch\n`;
+    responseContent += `• Provides sustained morning energy\n`;
+  } else {
+    // Provide additional context not in original response
+    responseContent += `**Additional Information:**\n`;
+    responseContent += `• Prep time: 10-15 minutes\n`;
+    responseContent += `• Can be prepared night before\n`;
+    responseContent += `• Storage: Refrigerate leftovers up to 3 days\n`;
+  }
+  
+  return { content: responseContent, functionCalls: null };
+}
 
   /**
    * Handle improvement requests like "how can I improve it?"
