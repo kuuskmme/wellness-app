@@ -5,7 +5,122 @@ const { executeFunction } = require('./dataAccessFunctions');
  * Conversation Type Handlers
  * Each handler specializes in a specific type of user query
  * with personalized responses and data interpretation
+*/
+
+/**
+ * Detect medical concerns that require professional attention
  */
+function detectMedicalConcern(message) {
+  const lowerMessage = message.toLowerCase();
+  
+  // Critical symptoms that need immediate attention
+  const criticalSymptoms = [
+    'chest pain',
+    'chest pains',
+    'heart pain',
+    'heart palpitations',
+    'can\'t breathe',
+    'cannot breathe',
+    'difficulty breathing',
+    'shortness of breath',
+    'severe pain',
+    'sharp pain',
+    'stabbing pain',
+    'crushing pain',
+    'pressure in chest',
+    'tightness in chest',
+    'pain in arm',
+    'jaw pain',
+    'dizzy',
+    'dizziness',
+    'fainting',
+    'passed out',
+    'unconscious',
+    'blurred vision',
+    'severe headache',
+    'worst headache',
+    'numbness',
+    'can\'t move',
+    'paralyzed',
+    'stroke',
+    'heart attack',
+    'allergic reaction',
+    'can\'t swallow',
+    'throat closing'
+  ];
+  
+  // Check for critical symptoms
+  for (const symptom of criticalSymptoms) {
+    if (lowerMessage.includes(symptom)) {
+      return {
+        isMedical: true,
+        severity: 'critical',
+        message: `🚨 **Important: Seek Medical Attention**
+
+The symptoms you're describing (${symptom}) require professional medical evaluation. 
+
+**Please:**
+• Stop any physical activity immediately
+• Contact your healthcare provider right away
+• If symptoms are severe, consider calling emergency services (911)
+• Do not ignore chest pain during exercise - it could indicate a serious condition
+
+I'm a wellness assistant and cannot provide medical diagnosis or advice. Your safety is the top priority, and these symptoms need professional medical attention.`
+      };
+    }
+  }
+  
+  // General medical concerns
+  const medicalTerms = [
+    'pain',
+    'hurts',
+    'aching',
+    'swelling',
+    'bleeding',
+    'infection',
+    'fever',
+    'sick',
+    'illness',
+    'disease',
+    'condition',
+    'symptom',
+    'diagnosed',
+    'medication',
+    'prescription',
+    'treatment',
+    'medical'
+  ];
+  
+  // Check context around medical terms
+  for (const term of medicalTerms) {
+    if (lowerMessage.includes(term)) {
+      // Check if it's asking for medical advice
+      if (lowerMessage.includes('what should i do') ||
+          lowerMessage.includes('what do you think') ||
+          lowerMessage.includes('is this normal') ||
+          lowerMessage.includes('should i worry') ||
+          lowerMessage.includes('do i need')) {
+        return {
+          isMedical: true,
+          severity: 'general',
+          message: `I understand you have health concerns. While I can help with general wellness, nutrition, and fitness guidance, I cannot provide medical advice or diagnosis.
+
+For any pain, symptoms, or medical concerns, please consult with a healthcare professional who can properly evaluate your condition.
+
+I'm here to support your wellness journey with:
+• Nutrition planning
+• General fitness guidance (when medically cleared)
+• Wellness tracking
+• Healthy lifestyle tips
+
+Is there anything else I can help you with today?`
+        };
+      }
+    }
+  }
+  
+  return { isMedical: false };
+}
 
 class ConversationHandlers {
   /**
@@ -15,6 +130,13 @@ class ConversationHandlers {
  */
 static async handleHealthMetrics(userId, query, context) {
   try {
+    const medicalCheck = detectMedicalConcern(query);
+if (medicalCheck.isMedical) {
+  return {
+    response: medicalCheck.message,
+    functionCalls: []
+  };
+}
     const lowerQuery = query.toLowerCase();
     
     // Enhanced detection for trend/chart queries
@@ -394,6 +516,13 @@ static async handleHealthMetrics(userId, query, context) {
    */
   static async handleProgress(userId, query, context) {
     try {
+      const medicalCheck = detectMedicalConcern(query);
+if (medicalCheck.isMedical) {
+  return {
+    response: medicalCheck.message,
+    functionCalls: []
+  };
+}
       const progressResult = await executeFunction('get_progress_summary', userId, {
         goal_type: 'all',
         include_recommendations: true
@@ -498,6 +627,13 @@ static async handleHealthMetrics(userId, query, context) {
  */
 static async handleMealPlans(userId, query, context) {
   try {
+    const medicalCheck = detectMedicalConcern(query);
+if (medicalCheck.isMedical) {
+  return {
+    response: medicalCheck.message,
+    functionCalls: []
+  };
+}
     const lowerQuery = query.toLowerCase();
     
     // Check if asking about specific meal's nutrients
@@ -862,6 +998,13 @@ static async handleMealPlans(userId, query, context) {
    */
   static async handleRecipes(userId, query, context) {
     try {
+      const medicalCheck = detectMedicalConcern(query);
+if (medicalCheck.isMedical) {
+  return {
+    response: medicalCheck.message,
+    functionCalls: []
+  };
+}
       // Get user preferences for context
       const prefsResult = await executeFunction('get_nutrition_data', userId, {
         type: 'preferences'
@@ -957,6 +1100,13 @@ static async handleMealPlans(userId, query, context) {
    */
   static async handleNutritionAnalysis(userId, query, context) {
   try {
+    const medicalCheck = detectMedicalConcern(query);
+if (medicalCheck.isMedical) {
+  return {
+    response: medicalCheck.message,
+    functionCalls: []
+  };
+}
     const lowerQuery = query.toLowerCase();
     
     // Determine timeframe - check for weekly analysis
@@ -1319,6 +1469,13 @@ static handleWeeklyNutritionAnalysis(data, preferences, userName, isProteinQuery
    */
   static async handleGeneralWellness(userId, query, context) {
     try {
+      const medicalCheck = detectMedicalConcern(query);
+if (medicalCheck.isMedical) {
+  return {
+    response: medicalCheck.message,
+    functionCalls: []
+  };
+}
       // Extract topic from query
       const topic = this.extractWellnessTopic(query);
       
