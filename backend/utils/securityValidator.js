@@ -204,27 +204,38 @@ class SecurityValidator {
    * Check for unusual formatting
    */
   hasUnusualFormatting(message) {
-    // Check for excessive special characters
-    const specialCharCount = (message.match(/[^a-zA-Z0-9\s.,!?'-]/g) || []).length;
-    const totalLength = message.length;
-    
-    if (totalLength > 0 && specialCharCount / totalLength > 0.3) {
-      return true;
-    }
-    
-    // Check for hidden Unicode characters
-    if (/[\u200B-\u200F\u202A-\u202E\u2060-\u2064\u206A-\u206F]/.test(message)) {
-      return true;
-    }
-    
-    // Check for excessive capitalization
-    const upperCount = (message.match(/[A-Z]/g) || []).length;
-    if (totalLength > 20 && upperCount / totalLength > 0.5) {
-      return true;
-    }
-    
+  // First, check if the message contains a valid wellness query
+  const wellnessKeywords = /\b(bmi|weight|wellness|health|meal|nutrition|exercise|calories|protein|diet|fitness|score)\b/i;
+  if (wellnessKeywords.test(message)) {
+    // If it has wellness keywords, be more lenient with special characters
     return false;
   }
+  
+  // Check for excessive special characters (but allow emojis and international characters)
+  // Remove emojis and international characters first
+  const withoutEmojisAndUnicode = message.replace(/[\u{1F300}-\u{1F9FF}]|[\u{2600}-\u{26FF}]|[\u{2700}-\u{27BF}]|[\u{1F000}-\u{1F02F}]|[\u{1F0A0}-\u{1F0FF}]|[\u{1F100}-\u{1F64F}]|[\u{1F680}-\u{1F6FF}]|[\u{1F900}-\u{1F9FF}]|[\u{FE00}-\u{FE0F}]|[\u{1F1E0}-\u{1F1FF}]|[\u0600-\u06FF]|[\u4E00-\u9FFF]|[\u3040-\u309F]|[\u30A0-\u30FF]/gu, '');
+  
+  // Now check for suspicious patterns in what remains
+  const specialCharCount = (withoutEmojisAndUnicode.match(/[^a-zA-Z0-9\s.,!?'-]/g) || []).length;
+  const totalLength = withoutEmojisAndUnicode.length;
+  
+  // Only flag if more than 30% special characters AFTER removing emojis/international chars
+  if (totalLength > 0 && specialCharCount / totalLength > 0.3) {
+    return true;
+  }
+  
+  // Check for suspicious patterns like repeated punctuation
+  if (/[!?]{3,}/.test(message) || /\.{5,}/.test(message)) {
+    return true;
+  }
+  
+  // Check for suspicious brackets or code-like patterns
+  if (/\{\{.*\}\}/.test(message) || /<%.*%>/.test(message) || /##.*##/.test(message)) {
+    return true;
+  }
+  
+  return false;
+}
   
   /**
    * Check for suspicious patterns in conversation
@@ -261,34 +272,30 @@ class SecurityValidator {
    * Validate content length and structure
    */
   validateContent(message) {
-    // Check message length
-    if (message.length > 2000) {
-      return {
-        valid: false,
-        reason: 'message_too_long',
-        response: 'Your message is too long. Please keep it under 2000 characters and try again.'
-      };
-    }
-    
-    if (message.trim().length === 0) {
-      return {
-        valid: false,
-        reason: 'empty_message',
-        response: 'Please enter a message.'
-      };
-    }
-    
-    // Check for spam patterns
-    if (this.isSpam(message)) {
+  // Check for empty or whitespace only
+  if (!message || message.trim().length === 0) {
+    return {
+      valid: false,
+      reason: 'empty_message',
+      response: 'Please enter a message. How can I help with your wellness journey?'
+    };
+  }
+  
+  // Check for spam patterns (but be more specific)
+  if (this.isSpam(message)) {
+    // Double-check if it's really spam by looking for wellness keywords
+    const wellnessKeywords = /\b(bmi|weight|wellness|health|meal|nutrition|exercise)\b/i;
+    if (!wellnessKeywords.test(message)) {
       return {
         valid: false,
         reason: 'spam_detected',
         response: 'Your message appears to be spam. Please ask a genuine wellness-related question.'
       };
     }
-    
-    return { valid: true };
   }
+  
+  return { valid: true };
+}
   
   /**
    * Check for spam patterns
