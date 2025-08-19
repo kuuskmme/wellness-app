@@ -203,75 +203,109 @@ class AIChatService {
     this.topP = 0.95; // For relevance
   }
 
+  async callHandlerForType(type, userId, message, context) {
+  try {
+    switch(type) {
+      case 'health_metrics':
+        return await ConversationHandlers.handleHealthMetrics(userId, message, context);
+      case 'progress':
+        return await ConversationHandlers.handleProgressTracking(userId, message, context);
+      case 'meal_plans':
+        return await ConversationHandlers.handleMealPlans(userId, message, context);
+      case 'recipes':
+        return await ConversationHandlers.handleRecipes(userId, message, context);
+      case 'nutrition_analysis':
+        return await ConversationHandlers.handleNutritionAnalysis(userId, message, context);
+      case 'general_wellness':
+        return await ConversationHandlers.handleGeneralWellness(userId, message, context);
+      default:
+        return null;
+    }
+  } catch (error) {
+    console.error(`Handler error for ${type}:`, error);
+    return null;
+  }
+}
+
   /**
    * Detect conversation type from user message with fuzzy matching
    */
   detectConversationType(message) {
-    const lowerMessage = message.toLowerCase();
-    
-    // Check for wellness score improvement queries
-    if ((lowerMessage.includes('wellness') || lowerMessage.includes('score')) && 
-        (lowerMessage.includes('improve') || lowerMessage.includes('focus') || 
-         lowerMessage.includes('increase') || lowerMessage.includes('boost') || 
-         lowerMessage.includes('better'))) {
-      return 'health_metrics'; // Will be handled with wellness improvement logic
-    }
-    
-    // Check for specific weight change queries
-    if ((lowerMessage.includes('weight') || lowerMessage.includes('weigh')) && 
-        (lowerMessage.includes('change') || lowerMessage.includes('month') || 
-         lowerMessage.includes('week') || lowerMessage.includes('lost') || 
-         lowerMessage.includes('gained') || lowerMessage.includes('progress'))) {
-      return 'health_metrics'; // Will be handled with specific weight change logic
-    }
-    
-    // Use multiple keywords for better detection
-    const patterns = {
-      health_metrics: [
-        'bmi', 'weight', 'wellness', 'health metric', 'body mass',
-        'weigh', 'heavy', 'pounds', 'kilos', 'kg', 'lbs',
-        'wellness score', 'health score', 'metrics', 'measurements'
-      ],
-      progress: [
-        'progress', 'goal', 'achievement', 'how am i doing',
-        'results', 'improvement', 'tracking', 'losing weight',
-        'gaining', 'reached', 'target', 'milestone', 'journey'
-      ],
-      meal_plans: [
-        'meal', 'breakfast', 'lunch', 'dinner', 'snack',
-        'eat', 'food', 'diet', 'menu', 'hungry',
-        'recipe for today', 'meal plan', 'what to eat'
-      ],
-      recipes: [
-        'recipe', 'cook', 'dish', 'ingredient', 'prepare',
-        'make', 'cooking', 'kitchen', 'instructions'
-      ],
-      nutrition_analysis: [
-        'nutrition', 'calorie', 'protein', 'carb', 'macro',
-        'nutritional', 'nutrients', 'vitamins', 'minerals',
-        'fiber', 'sugar', 'sodium', 'fat'
-      ],
-      general_wellness: [
-        'exercise', 'workout', 'sleep', 'stress', 'water',
-        'hydration', 'wellness', 'health tip', 'fitness',
-        'yoga', 'meditation', 'rest', 'energy', 'tired'
-      ]
-    };
-    
-    // Check each pattern for matches
-    for (const [type, keywords] of Object.entries(patterns)) {
-      if (keywords.some(keyword => lowerMessage.includes(keyword))) {
-        return type;
+  const lowerMessage = message.toLowerCase();
+  const detectedTypes = []; // Collect ALL matching types
+  
+  // Check for wellness score improvement queries
+  if ((lowerMessage.includes('wellness') || lowerMessage.includes('score')) &&
+      (lowerMessage.includes('improve') || lowerMessage.includes('focus') ||
+       lowerMessage.includes('increase') || lowerMessage.includes('boost') ||
+       lowerMessage.includes('better'))) {
+    detectedTypes.push('health_metrics');
+  }
+  
+  // Check for specific weight change queries
+  if ((lowerMessage.includes('weight') || lowerMessage.includes('weigh')) &&
+      (lowerMessage.includes('change') || lowerMessage.includes('month') ||
+       lowerMessage.includes('week') || lowerMessage.includes('lost') ||
+       lowerMessage.includes('gained') || lowerMessage.includes('progress'))) {
+    detectedTypes.push('health_metrics');
+  }
+  
+  // Use multiple keywords for better detection
+  const patterns = {
+    health_metrics: [
+      'bmi', 'weight', 'wellness', 'health metric', 'body mass',
+      'weigh', 'heavy', 'pounds', 'kilos', 'kg', 'lbs',
+      'wellness score', 'health score', 'metrics', 'measurements'
+    ],
+    progress: [
+      'progress', 'goal', 'achievement', 'how am i doing',
+      'results', 'improvement', 'tracking', 'losing weight',
+      'gaining', 'reached', 'target', 'milestone', 'journey'
+    ],
+    meal_plans: [
+      'meal', 'breakfast', 'lunch', 'dinner', 'snack',
+      'eat', 'food', 'diet', 'menu', 'hungry',
+      'recipe for today', 'meal plan', 'what to eat'
+    ],
+    recipes: [
+      'recipe', 'cook', 'dish', 'ingredient', 'prepare',
+      'make', 'cooking', 'kitchen', 'instructions'
+    ],
+    nutrition_analysis: [
+      'nutrition', 'calorie', 'protein', 'carb', 'macro',
+      'nutritional', 'nutrients', 'vitamins', 'minerals',
+      'fiber', 'sugar', 'sodium', 'fat'
+    ],
+    general_wellness: [
+      'exercise', 'workout', 'sleep', 'stress', 'water',
+      'hydration', 'wellness', 'health tip', 'fitness',
+      'yoga', 'meditation', 'rest', 'energy', 'tired'
+    ]
+  };
+  
+  // Check each pattern and ADD to detectedTypes (don't return immediately)
+  for (const [type, keywords] of Object.entries(patterns)) {
+    if (keywords.some(keyword => lowerMessage.includes(keyword))) {
+      if (!detectedTypes.includes(type)) { // Avoid duplicates
+        detectedTypes.push(type);
       }
     }
-    
-    // Check for common misspellings or variations
-    if (this.checkForTypos(lowerMessage)) {
-      return this.detectTypeFromTypo(lowerMessage);
-    }
-    
-    return null;
   }
+  
+  // Check for common misspellings or variations
+  if (detectedTypes.length === 0 && this.checkForTypos(lowerMessage)) {
+    detectedTypes.push(this.detectTypeFromTypo(lowerMessage));
+  }
+  
+  // Return array if multiple types, single type if one, null if none
+  if (detectedTypes.length > 1) {
+    return detectedTypes; // Return array for multiple
+  } else if (detectedTypes.length === 1) {
+    return detectedTypes[0]; // Return single string
+  }
+  
+  return null;
+}
   
   /**
    * Check for common typos and misspellings
@@ -347,6 +381,15 @@ class AIChatService {
       const queryType = this.detectConversationType(processedMessage);
       contextManager.updateConversationState(processedMessage, queryType);
       contextManager.setConversationMode(context.mode);
+
+      // Check if multiple types detected
+    if (Array.isArray(queryType)) {
+      // For OpenAI, we'll let it handle multiple topics naturally
+      // But update the context to know we have multiple topics
+      contextManager.updateConversationState(processedMessage, queryType.join(','));
+    } else {
+      contextManager.updateConversationState(processedMessage, queryType);
+    }
       
       // Log reference resolution if it occurred
       if (referenceInfo.hasReference) {
@@ -486,42 +529,42 @@ class AIChatService {
     return prompt;
   }
 
-  async getMockResponse(message, context, userId, referenceInfo = null) {
-    const lowerMessage = message.toLowerCase();
+  async getMockResponse(message, context, userId, referenceInfo) {
+  const queryType = this.detectConversationType(message);
+  
+  // Handle multiple types
+  if (Array.isArray(queryType)) {
+    // Multiple types detected - handle them all
+    const responses = [];
+    const allFunctionCalls = [];
     
-    // If this is a follow-up, handle it specially
-    if (referenceInfo && referenceInfo.hasReference) {
-      return this.handleFollowUp(message, context, userId, referenceInfo);
-    }
-    
-    // Check if asking for more details or alternatives
-    if (contextManager.isElaborationRequest(message)) {
-      return this.handleElaboration(context, userId);
-    }
-    
-    if (contextManager.isAlternativeRequest(message)) {
-      return this.handleAlternativeRequest(context, userId);
-    }
-    
-    // Detect conversation type
-    const conversationType = this.detectConversationType(message);
-    
-    // If we have a specialized handler, use it
-    if (conversationType) {
-      const handlerResult = await this.handleWithSpecializedHandler(
-        conversationType, 
-        userId, 
-        message, 
-        context.userContext
-      );
-      
-      if (handlerResult) {
-        return {
-          content: handlerResult.response,
-          functionCalls: handlerResult.functionCalls
-        };
+    for (const type of queryType) {
+      const handler = await this.callHandlerForType(type, userId, message, context);
+      if (handler) {
+        responses.push(handler.response);
+        if (handler.functionCalls) {
+          allFunctionCalls.push(...handler.functionCalls);
+        }
       }
     }
+    
+    // Combine responses
+    const userName = context.userProfile?.name || 'User';
+    let combinedResponse = '';
+    
+    // Add each response with appropriate spacing
+    queryType.forEach((type, index) => {
+      if (responses[index]) {
+        if (index > 0) combinedResponse += '\n\n';
+        combinedResponse += responses[index];
+      }
+    });
+    
+    return {
+      content: combinedResponse,
+      functionCalls: allFunctionCalls.length > 0 ? allFunctionCalls : null
+    };
+  }
     
     // Mock function calling for testing without OpenAI
     let functionCalls = null;
