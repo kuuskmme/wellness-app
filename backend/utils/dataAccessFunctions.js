@@ -92,6 +92,71 @@ const functionSchemas = [
   }
 ];
 
+/**
+ * NEW FUNCTION TO ADD - Get historical weight data from HealthHistory
+ */
+async function getWeightHistory(userId, timeframe = 'month') {
+  const HealthHistory = require('../models/HealthHistory');
+  
+  // Calculate date range
+  const endDate = new Date();
+  const startDate = new Date();
+  
+  switch (timeframe) {
+    case 'week':
+      startDate.setDate(startDate.getDate() - 7);
+      break;
+    case 'month':
+    default:
+      startDate.setMonth(startDate.getMonth() - 1);
+      break;
+  }
+  
+  // Get historical data from HealthHistory model
+  const history = await HealthHistory.find({
+    userId: userId,
+    'period.type': 'daily',
+    'period.startDate': { $gte: startDate, $lte: endDate }
+  }).sort({ 'period.startDate': 1 });
+  
+  if (!history || history.length === 0) {
+    return null;
+  }
+  
+  // Extract weight data points from history
+  const weightData = history
+    .filter(h => h.metrics?.weight?.value)
+    .map(h => ({
+      date: h.period.startDate,
+      weight: h.metrics.weight.value
+    }));
+  
+  if (weightData.length < 2) {
+    return null; // Need at least 2 points for a trend
+  }
+  
+  // Calculate the trend
+  const firstWeight = weightData[0].weight;
+  const lastWeight = weightData[weightData.length - 1].weight;
+  const change = lastWeight - firstWeight;
+  const changePercentage = ((change / firstWeight) * 100).toFixed(1);
+  
+  // Calculate weekly average change
+  const daysDiff = (endDate - startDate) / (1000 * 60 * 60 * 24);
+  const weeklyChange = (change / daysDiff) * 7;
+  
+  return {
+    dataPoints: weightData.length,
+    startValue: firstWeight,
+    endValue: lastWeight,
+    change: change,
+    changePercentage: changePercentage,
+    weeklyAverage: weeklyChange.toFixed(2),
+    trend: change < -0.1 ? 'decreasing' : change > 0.1 ? 'increasing' : 'stable',
+    data: weightData
+  };
+}
+
 // Function implementations
 const functionImplementations = {
   /**
@@ -281,19 +346,51 @@ const functionImplementations = {
       }
     }
     
-    return {
-      error: null,
-      data: response
-    };
-    
-  } catch (error) {
-    console.error('get_health_metrics error:', error);
-    return {
-      error: 'Failed to retrieve health metrics',
-      data: null
-    };
-  }
-},
+    // ⭐ ADD THIS SECTION AFTER building the basic response object
+      // This should be BEFORE the final return statement
+      
+      // Add historical trend data if requested (not for 'current' period)
+      if (time_period !== 'current') {
+        // Call our new getWeightHistory function
+        const weightHistory = await getWeightHistory(
+          userId, 
+          time_period === 'weekly' ? 'week' : 'month'
+        );
+        
+        if (weightHistory) {
+          // Add the historical data to response
+          response.trend = weightHistory;
+          
+          // Add interpretation based on user's goals
+          if (profile.fitnessGoals?.primary === 'weight_loss' && weightHistory.change < 0) {
+            response.progressStatus = 'on_track';
+            response.progressMessage = `Great progress! You've lost ${Math.abs(weightHistory.change).toFixed(1)} kg`;
+          } else if (profile.fitnessGoals?.primary === 'muscle_gain' && weightHistory.change > 0) {
+            response.progressStatus = 'on_track';
+            response.progressMessage = `Good gains! You've gained ${weightHistory.change.toFixed(1)} kg`;
+          } else if (profile.fitnessGoals?.primary === 'maintenance' && Math.abs(weightHistory.change) < 0.5) {
+            response.progressStatus = 'on_track';
+            response.progressMessage = 'Excellent weight maintenance!';
+          } else {
+            response.progressStatus = 'needs_attention';
+            response.progressMessage = 'Your weight trend doesn\'t align with your goal';
+          }
+        }
+      }
+      
+      return {
+        error: null,
+        data: response
+      };
+      
+    } catch (error) {
+      console.error('get_health_metrics error:', error);
+      return {
+        error: 'Failed to retrieve health metrics',
+        data: null
+      };
+    }
+  },
 
   /**
    * Get nutrition data for the user
@@ -428,6 +525,8 @@ const functionImplementations = {
       };
     }
   },
+
+
 
   /**
    * Get progress summary for the user
@@ -691,5 +790,6 @@ async function executeFunction(functionName, userId, parameters) {
 module.exports = {
   functionSchemas,
   executeFunction,
-  functionImplementations
+  functionImplementations,
+  getWeightHistory  // Add this export
 };

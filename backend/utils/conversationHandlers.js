@@ -325,47 +325,108 @@ if (medicalCheck.isMedical) {
     }
     
     // Handle specific weight change queries (existing code)
-    if (isWeightChange) {
+     if (isWeightChange) {
       response += `${userName}, let me check your weight changes:\n\n`;
       
-      if (data.trend) {
+      // The data.trend will now be populated from our new getWeightHistory function
+      if (data.trend && data.trend.dataPoints >= 2) {
         const change = data.trend.change;
         const startWeight = data.trend.startValue;
-        const currentWeight = data.trend.endValue || data.weight?.current;
+        const currentWeight = data.trend.endValue;
+        const weeklyAverage = data.trend.weeklyAverage;
+        const changePercentage = data.trend.changePercentage;
         
-        response += `**📊 Weight Summary:**\n`;
-        response += `• Start of period: ${startWeight} kg\n`;
+        response += `**📊 Weight Change Analysis:**\n`;
+        response += `• Starting weight: ${startWeight} kg\n`;
         response += `• Current weight: ${currentWeight} kg\n`;
         
-        if (change < 0) {
-          response += `• **You've lost ${Math.abs(change).toFixed(1)} kg!** 🎉\n\n`;
-          response += `That's excellent progress! A healthy weight loss rate is 0.5-1 kg per week.`;
-        } else if (change > 0) {
-          response += `• **You've gained ${change.toFixed(1)} kg**\n\n`;
+        // Provide detailed interpretation based on the change
+        if (change < -0.1) {
+          response += `• **You've lost ${Math.abs(change).toFixed(1)} kg** (${Math.abs(changePercentage)}% decrease) 🎉\n\n`;
+          
+          response += `**📈 Rate of Change:**\n`;
+          response += `• Average weekly loss: ${Math.abs(weeklyAverage)} kg/week\n`;
+          
+          // Evaluate if the rate is healthy
+          if (Math.abs(weeklyAverage) > 1) {
+            response += `• ⚠️ This is faster than the recommended 0.5-1 kg/week\n`;
+            response += `• Consider a more gradual approach for sustainable results\n\n`;
+          } else if (Math.abs(weeklyAverage) >= 0.5) {
+            response += `• ✅ This is an excellent, healthy rate of weight loss!\n`;
+            response += `• You're right in the optimal range of 0.5-1 kg/week\n\n`;
+          } else {
+            response += `• This is a slow, steady rate - perfectly sustainable\n`;
+            response += `• Small changes add up to big results over time\n\n`;
+          }
+          
+          // Add context based on goals
+          if (data.goals?.primary === 'weight_loss') {
+            response += `**🎯 Goal Alignment:** You're making great progress toward your weight loss goal!`;
+            
+            // Calculate time to goal if target exists
+            if (data.weight?.target && Math.abs(weeklyAverage) > 0) {
+              const remaining = currentWeight - data.weight.target;
+              if (remaining > 0) {
+                const weeksToGoal = Math.ceil(remaining / Math.abs(weeklyAverage));
+                response += `\n• At this rate, you'll reach ${data.weight.target} kg in about ${weeksToGoal} weeks`;
+              }
+            }
+          }
+          
+        } else if (change > 0.1) {
+          response += `• **You've gained ${change.toFixed(1)} kg** (${changePercentage}% increase)\n\n`;
+          
+          response += `**📈 Rate of Change:**\n`;
+          response += `• Average weekly gain: ${weeklyAverage} kg/week\n\n`;
           
           // Context-aware response based on goals
           if (data.goals?.primary === 'muscle_gain') {
-            response += `This could be positive if you're building muscle! Make sure you're combining this with strength training.`;
+            response += `**💪 Goal Alignment:** This aligns with your muscle-building goals!\n`;
+            response += `• Ensure you're combining this with strength training\n`;
+            response += `• Aim for 0.25-0.5 kg/week for lean muscle gain`;
           } else if (data.goals?.primary === 'weight_loss') {
-            response += `This isn't aligned with your weight loss goal. Let's review your nutrition and activity levels.`;
+            response += `**📊 Goal Review:** This doesn't align with your weight loss goal.\n`;
+            response += `• Let's review your nutrition plan and activity levels\n`;
+            response += `• Small adjustments can get you back on track`;
           } else {
             response += `Weight fluctuations are normal. Focus on overall trends rather than daily changes.`;
           }
+          
         } else {
-          response += `• **Your weight has remained stable** (no change)\n\n`;
-          response += `Maintaining a stable weight shows good consistency!`;
+          response += `• **Your weight has remained stable** (change less than 0.1 kg)\n\n`;
+          response += `**✅ Stability Analysis:**\n`;
+          response += `• Excellent weight maintenance!\n`;
+          response += `• This shows consistent habits and good balance\n`;
+          
+          if (data.goals?.primary === 'maintenance') {
+            response += `• Perfect alignment with your maintenance goal!`;
+          } else if (data.goals?.primary === 'weight_loss') {
+            response += `• To kickstart weight loss, consider a small calorie deficit`;
+          }
         }
         
-        // Add progress towards goal if applicable
-        if (data.weight?.target && data.weight?.progressPercentage !== undefined) {
-          response += `\n\n**Progress to Goal:** ${data.weight.progressPercentage}% complete`;
-          const remaining = Math.abs(currentWeight - data.weight.target);
-          response += `\n• ${remaining.toFixed(1)} kg to go!`;
-        }
+        // Add motivational message
+        response += `\n\n💡 **Remember:** Sustainable progress is better than rapid changes!`;
         
       } else {
-        response += `I don't have enough historical data to show changes yet.\n\n`;
-        response += `**Current Weight:** ${data.weight?.current || 'Not recorded'} kg\n`;
+        // Fallback when no historical data is available
+        response += `I need more historical data points to show your weight trend.\n\n`;
+        response += `**📊 Current Status:**\n`;
+        response += `• Current weight: ${data.weight?.current || 'Not recorded'} kg\n`;
+        
+        if (data.weight?.initial) {
+          const totalChange = data.weight.current - data.weight.initial;
+          if (Math.abs(totalChange) > 0.1) {
+            response += `• Change from initial: ${totalChange > 0 ? '+' : ''}${totalChange.toFixed(1)} kg\n`;
+          }
+        }
+        
+        if (data.weight?.target) {
+          const toGo = data.weight.current - data.weight.target;
+          response += `• Distance to goal: ${Math.abs(toGo).toFixed(1)} kg ${toGo > 0 ? 'to lose' : 'to gain'}\n`;
+        }
+        
+        response += `\n💡 **Tip:** For accurate trend analysis, record your weight regularly at the same time of day.`;
       }
       
       return {
@@ -377,6 +438,7 @@ if (medicalCheck.isMedical) {
         }]
       };
     }
+    
     
     // Handle wellness score improvement queries
     if (isWellnessImprovement) {
