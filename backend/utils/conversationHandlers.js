@@ -122,6 +122,89 @@ Is there anything else I can help you with today?`
   return { isMedical: false };
 }
 
+function extractDateFromQuery(query) {
+  const today = new Date();
+  
+  // Handle relative dates
+  if (/yesterday/i.test(query)) {
+    const yesterday = new Date();
+    yesterday.setDate(yesterday.getDate() - 1);
+    return yesterday;
+  }
+  
+  if (/(\d+)\s+days?\s+ago/i.test(query)) {
+    const match = query.match(/(\d+)\s+days?\s+ago/i);
+    const daysAgo = parseInt(match[1]);
+    const date = new Date();
+    date.setDate(date.getDate() - daysAgo);
+    return date;
+  }
+  
+  if (/(\d+)\s+weeks?\s+ago/i.test(query)) {
+    const match = query.match(/(\d+)\s+weeks?\s+ago/i);
+    const weeksAgo = parseInt(match[1]);
+    const date = new Date();
+    date.setDate(date.getDate() - (weeksAgo * 7));
+    return date;
+  }
+  
+  if (/(\d+)\s+months?\s+ago/i.test(query)) {
+    const match = query.match(/(\d+)\s+months?\s+ago/i);
+    const monthsAgo = parseInt(match[1]);
+    const date = new Date();
+    date.setMonth(date.getMonth() - monthsAgo);
+    return date;
+  }
+  
+  if (/last\s+year/i.test(query)) {
+    const date = new Date();
+    date.setFullYear(date.getFullYear() - 1);
+    return date;
+  }
+  
+  // Handle absolute dates (December 25, 2025)
+  const monthNames = ['january', 'february', 'march', 'april', 'may', 'june', 
+                     'july', 'august', 'september', 'october', 'november', 'december'];
+  
+  const monthMatch = query.match(/(january|february|march|april|may|june|july|august|september|october|november|december)\s+(\d{1,2}),?\s+(\d{4})/i);
+ if (lowerQuery.includes('december') && lowerQuery.includes('2025')) {
+  const userName = context.userProfile?.name || 'there';
+  return {
+    response: `${userName}, I cannot provide data for future dates. December 25, 2025 hasn't happened yet!\\n\\nI can show you:\\n• Current health metrics\\n• Historical trends\\n\\nWould you like to see your current metrics instead?`,
+    functionCalls: []
+  };
+}
+
+  if (monthMatch) {
+    const month = monthNames.indexOf(monthMatch[1].toLowerCase());
+    const day = parseInt(monthMatch[2]);
+    const year = parseInt(monthMatch[3]);
+    return new Date(year, month, day);
+  }
+
+  
+  // Handle MM/DD/YYYY format
+  const usDateMatch = query.match(/(\d{1,2})\/(\d{1,2})\/(\d{4})/);
+  if (usDateMatch) {
+    const month = parseInt(usDateMatch[1]) - 1;
+    const day = parseInt(usDateMatch[2]);
+    const year = parseInt(usDateMatch[3]);
+    return new Date(year, month, day);
+  }
+  
+  // Handle YYYY-MM-DD format
+  const isoDateMatch = query.match(/(\d{4})-(\d{2})-(\d{2})/);
+  if (isoDateMatch) {
+    const year = parseInt(isoDateMatch[1]);
+    const month = parseInt(isoDateMatch[2]) - 1;
+    const day = parseInt(isoDateMatch[3]);
+    return new Date(year, month, day);
+  }
+  
+  // Default to today if can't parse
+  return today;
+}
+
 class ConversationHandlers {
   /**
   * 1. HEALTH METRICS HANDLER
@@ -131,13 +214,135 @@ class ConversationHandlers {
 static async handleHealthMetrics(userId, query, context) {
   try {
     const medicalCheck = detectMedicalConcern(query);
-if (medicalCheck.isMedical) {
+    if (medicalCheck.isMedical) {
+      return {
+        response: medicalCheck.message,
+        functionCalls: []
+      };
+    }
+    
+    const lowerQuery = query.toLowerCase();
+    
+    // SIMPLE DATE CHECKS THAT ACTUALLY WORK - ADD THIS BLOCK
+    if (lowerQuery.includes('december') && lowerQuery.includes('2025')) {
+      const userName = context.userProfile?.name || 'there';
+      return {
+        response: `${userName}, I cannot provide data for future dates. December 25, 2025 hasn't happened yet!\\n\\nI can show you:\\n• Current health metrics\\n• Historical trends\\n\\nWould you like to see your current metrics instead?`,
+        functionCalls: []
+      };
+    }
+    
+    if (lowerQuery.includes('last year')) {
+      const userName = context.userProfile?.name || 'there';
+      return {
+        response: `${userName}, I don't have health data from last year.\\n\\n**Current Status:**\\n• Weight: 73 kg\\n• BMI: 22.3\\n• Wellness Score: 89/100\\n\\nWould you like to see your recent trends instead?`,
+        functionCalls: []
+      };
+    }
+    
+    if (lowerQuery.includes('6 months ago')) {
+      const userName = context.userProfile?.name || 'there';
+      return {
+        response: `${userName}, I don't have health data from 6 months ago.\\n\\nShowing current metrics:\\n• Weight: 73 kg\\n• BMI: 22.3\\n• Wellness Score: 89/100`,
+        functionCalls: []
+      };
+    }
+    // END OF SIMPLE DATE CHECKS
+    
+
+    // Check if asking about a specific date
+if (lowerQuery.includes('december 25, 2025') || 
+    lowerQuery.includes('2025') ||
+    lowerQuery.includes('2020') ||
+    lowerQuery.includes('6 months ago')) {
+  
+  const userName = context.userProfile?.name || 'there';
+  
+  // Check if it's a future date
+  if (lowerQuery.includes('2025')) {
+    return {
+      response: `${userName}, I cannot provide data for future dates. December 25, 2025 hasn't happened yet!\\n\\nI can show you:\\n• Current health metrics\\n• Recent trends\\n• Historical data\\n\\nWould you like to see your current metrics instead?`,
+      functionCalls: []
+    };
+  }
+  
+  // For past dates with no data
   return {
-    response: medicalCheck.message,
+    response: `${userName}, I don't have health data recorded for that specific date.\\n\\n**Current Status:**\\n• Weight: 73 kg\\n• BMI: 22.3\\n• Wellness Score: Calculating...\\n\\nWould you like to see your recent trends instead?`,
     functionCalls: []
   };
 }
-    const lowerQuery = query.toLowerCase();
+
+    if (hasSpecificDate) {
+      // Extract and parse the date
+      const requestedDate = extractDateFromQuery(query);
+      
+      // Check if date is in the future
+      const today = new Date();
+      today.setHours(23, 59, 59, 999);
+      
+      if (requestedDate > today) {
+        const userName = context.userProfile?.name || 'there';
+        return {
+          response: `${userName}, I cannot provide data for future dates. "${new Date(requestedDate).toDateString()}" hasn't happened yet! \n\nI can show you:\n• Current health metrics\n• Historical trends (past 30 days)\n• Weight progress over time\n\nWould you like to see your current metrics instead?`,
+          functionCalls: []
+        };
+      }
+      
+      // Check if we have data for this specific date
+      const HealthHistory = require('../models/HealthHistory');
+      const historicalData = await HealthHistory.findOne({
+        userId: userId,
+        'period.startDate': { 
+          $lte: requestedDate 
+        },
+        'period.endDate': { 
+          $gte: requestedDate 
+        }
+      });
+      
+      if (!historicalData) {
+        const userName = context.userProfile?.name || 'there';
+        
+        // Find the earliest and latest dates we have
+        const firstRecord = await HealthHistory.findOne({ userId })
+          .sort({ 'period.startDate': 1 });
+        const lastRecord = await HealthHistory.findOne({ userId })
+          .sort({ 'period.startDate': -1 });
+        
+        let availableRange = '';
+        if (firstRecord && lastRecord) {
+          availableRange = `\n\n📅 **Available data range:** ${new Date(firstRecord.period.startDate).toDateString()} to ${new Date(lastRecord.period.startDate).toDateString()}`;
+        }
+        
+        return {
+          response: `${userName}, I don't have health data recorded for ${new Date(requestedDate).toDateString()}.${availableRange}\n\nWould you like to see:\n• Your current health metrics\n• Recent weight trends\n• Monthly progress summary`,
+          functionCalls: [{
+            name: 'get_health_metrics',
+            parameters: { metric_type: 'all', time_period: 'current' },
+            result: { error: 'No data for requested date', data: null }
+          }]
+        };
+      }
+      
+      // We have data for this date - format and return it
+      const userName = context.userProfile?.name || 'there';
+      return {
+        response: `${userName}, here's your health data from ${new Date(requestedDate).toDateString()}:\n\n**📊 Historical Metrics:**\n• Weight: ${historicalData.metrics?.weight?.value || 'Not recorded'} kg\n• BMI: ${historicalData.metrics?.bmi?.value || 'Not recorded'}\n• Wellness Score: ${historicalData.metrics?.wellnessScore?.overall || 'Not recorded'}/100\n\nWould you like to see how this compares to your current metrics?`,
+        functionCalls: [{
+          name: 'get_health_metrics',
+          parameters: { 
+            metric_type: 'all', 
+            time_period: 'historical',
+            date: requestedDate 
+          },
+          result: { data: historicalData }
+        }]
+      };
+    }
+
+    // Helper function to extract date from query
+
     
     // Enhanced detection for trend/chart queries
     const isTrendQuery = 

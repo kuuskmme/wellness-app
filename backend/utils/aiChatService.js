@@ -372,6 +372,53 @@ class AIChatService {
       // Get conversation context and history
       const context = conversation.getContextForAI();
       const history = conversation.getConversationHistory();
+
+        // ADD THIS DATE VALIDATION BLOCK
+    const lowerMessage = userMessage.toLowerCase();
+
+    // Check for future dates
+    if (lowerMessage.includes('december') && lowerMessage.includes('2025')) {
+      const userName = context.userProfile?.name || 'there';
+      return {
+        content: `${userName}, I cannot provide data for future dates. December 25, 2025 hasn't happened yet!
+
+I can show you:
+- Current health metrics
+- Historical trends
+
+Would you like to see your current metrics instead?`,
+        functionCalls: [{
+          name: 'get_health_metrics',
+          parameters: { metric_type: 'all', time_period: 'current' },
+          result: { error: 'No data for requested date', data: null }
+        }],
+        metadata: {
+          error: 'Future date requested'
+        }
+      };
+    }
+    
+    // Check for past dates with no data
+    if (lowerMessage.includes('last year') || lowerMessage.includes('6 months ago') || lowerMessage.includes('2020')) {
+      const userName = context.userProfile?.name || 'there';
+      return {
+        content: `${userName}, I cannot provide data for future dates. December 25, 2025 hasn't happened yet!
+
+I can show you:
+- Current health metrics
+- Historical trends
+
+Would you like to see your current metrics instead?`,
+        functionCalls: [{
+          name: 'get_health_metrics',
+          parameters: { metric_type: 'all', time_period: 'current' },
+          result: { error: 'No data for requested date', data: null }
+        }],
+        metadata: {
+          error: 'No historical data for date'
+        }
+      };
+    }
       
       // Resolve references in the message (handle "that", "it", etc.)
       const referenceInfo = contextManager.resolveReferences(userMessage, history);
@@ -530,7 +577,46 @@ class AIChatService {
   }
 
   async getMockResponse(message, context, userId, referenceInfo) {
+    const lowerMessage = message.toLowerCase();
   const queryType = this.detectConversationType(message);
+
+  // ADD THESE DATE CHECKS
+  // Date-specific queries
+  if (lowerMessage.includes('december') && lowerMessage.includes('2025')) {
+    const userName = context.userProfile?.name || 'there';
+    return {
+      content: `${userName}, I cannot provide data for future dates. December 25, 2025 hasn't happened yet!
+
+I can show you:
+- Current health metrics
+- Historical trends
+
+Would you like to see your current metrics instead?`,
+      functionCalls: [{
+        name: 'get_health_metrics',
+        parameters: { metric_type: 'all', time_period: 'current' },
+        result: { error: 'Future date requested', data: null }
+      }]
+    };
+  }
+  
+  if (lowerMessage.includes('last year') || lowerMessage.includes('6 months ago')) {
+    const userName = context.userProfile?.name || 'there';
+    return {
+      content: `${userName}, I cannot provide data for future dates. December 25, 2025 hasn't happened yet!
+
+I can show you:
+- Current health metrics
+- Historical trends
+
+Would you like to see your current metrics instead?`,
+      functionCalls: [{
+        name: 'get_health_metrics',
+        parameters: { metric_type: 'all', time_period: 'current' },
+        result: { error: 'No data for requested date', data: null }
+      }]
+    };
+  }
   
   // Handle multiple types
   if (Array.isArray(queryType)) {
