@@ -214,6 +214,17 @@ function detectMultipleDataRequests(message) {
   const requests = [];
   const lowerMessage = message.toLowerCase();
   
+  // First validate the date context
+  const dateValidation = validateAndExtractDateContext(message);
+  
+  // If date is invalid, don't process requests normally
+  if (!dateValidation.valid) {
+    return {
+      requests: [],
+      dateError: dateValidation
+    };
+  }
+  
   // Check for health metrics
   if (/\b(bmi|body mass index|weight|wellness score|health metrics?)\b/i.test(message)) {
     requests.push({
@@ -251,7 +262,76 @@ function detectMultipleDataRequests(message) {
     });
   }
   
-  return requests;
+  return {
+    requests: requests,
+    dateError: null
+  };
+}
+
+// Helper function to validate date requests and extract time context
+function validateAndExtractDateContext(message) {
+  const lowerMessage = message.toLowerCase();
+  const now = new Date();
+  const currentYear = now.getFullYear();
+  
+  // Check for future dates
+  if (/\b(next\s+(year|month|week)|tomorrow|future)\b/i.test(lowerMessage)) {
+    return {
+      valid: false,
+      reason: 'future_date',
+      message: 'I cannot provide data for future dates.'
+    };
+  }
+  
+  // Check for specific future years
+  if (/\b20(2[6-9]|[3-9]\d)\b/.test(lowerMessage)) {
+    return {
+      valid: false,
+      reason: 'future_date',
+      message: 'I cannot provide data for future dates.'
+    };
+  }
+  
+  // Check for "X years ago" pattern
+  const yearsAgoMatch = lowerMessage.match(/(\d+)\s+years?\s+ago/i);
+  if (yearsAgoMatch) {
+    const years = parseInt(yearsAgoMatch[1]);
+    if (years > 1) {
+      return {
+        valid: false,
+        reason: 'no_historical_data',
+        message: `I don't have data from ${years} years ago. Your health tracking started when you created your profile.`
+      };
+    }
+  }
+  
+  // Check for specific past years that are too old
+  if (/\b(202[0-2]|201\d|200\d|19\d\d)\b/.test(lowerMessage)) {
+    const yearMatch = lowerMessage.match(/\b(20\d\d|19\d\d)\b/);
+    if (yearMatch) {
+      const year = parseInt(yearMatch[1]);
+      if (year < currentYear - 1) {
+        return {
+          valid: false,
+          reason: 'no_historical_data',
+          message: `I don't have data from ${year}. Your health tracking is more recent.`
+        };
+      }
+    }
+  }
+  
+  // Check for invalid time references
+  if (/\b(yesterday|last\s+week|last\s+month|last\s+year)\b/i.test(lowerMessage) && 
+      (lowerMessage.includes('meal') || lowerMessage.includes('bmi') || lowerMessage.includes('weight'))) {
+    // These are potentially valid, but need checking
+    return {
+      valid: true,
+      timeContext: 'past',
+      warning: 'Historical data may be limited'
+    };
+  }
+  
+  return { valid: true };
 }
 
 class AIChatService {
@@ -401,47 +481,44 @@ class AIChatService {
       // Define lowerMessage early to avoid reference errors
       const lowerMessage = userMessage.toLowerCase();
       
-      // ADD THIS DATE VALIDATION BLOCK
-      // Check for future dates
-      if (lowerMessage.includes('december') && lowerMessage.includes('2025')) {
-        const userName = context.userContext?.userProfile?.name || 'there';
-        return {
-          content: `${userName}, I cannot provide data for future dates. December 25, 2025 hasn't happened yet!
-
-I can show you:
-- Current health metrics
-- Historical trends
-
-Would you like to see your current metrics instead?`,
-          functionCalls: [{
-            name: 'get_health_metrics',
-            parameters: { metric_type: 'all', time_period: 'current' },
-            result: { error: 'No data for requested date', data: null }
-          }],
-          metadata: {
-            error: 'Future date requested'
-          }
-        };
-      }
+     // Enhanced date validation
+      const dateValidation = validateAndExtractDateContext(userMessage);
       
-      // Check for past dates with no data
-      if (lowerMessage.includes('last year') || lowerMessage.includes('6 months ago') || lowerMessage.includes('2020')) {
+      if (!dateValidation.valid) {
         const userName = context.userContext?.userProfile?.name || 'there';
+        let errorMessage = `${userName}, ${dateValidation.message}\n\n`;
+        
+        if (dateValidation.reason === 'future_date') {
+          errorMessage += `I can show you:\n`;
+          errorMessage += `• Current health metrics\n`;
+          errorMessage += `• Recent trends (last 30 days)\n`;
+          errorMessage += `• Today's meal plan\n\n`;
+          errorMessage += `Would you like to see your current data instead?`;
+        } else if (dateValidation.reason === 'no_historical_data') {
+          errorMessage += `Available data:\n`;
+          errorMessage += `• Current metrics and status\n`;
+          errorMessage += `• Recent changes (if any)\n`;
+          errorMessage += `• Today's nutrition plan\n\n`;
+          errorMessage += `What would you like to know about your current health?`;
+        }
+        
         return {
-          content: `${userName}, I don't have historical data for that time period.
-
-I can show you:
-- Current health metrics
-- Recent trends (last 30 days)
-
-Would you like to see your current metrics instead?`,
+          content: errorMessage,
           functionCalls: [{
             name: 'get_health_metrics',
-            parameters: { metric_type: 'all', time_period: 'current' },
-            result: { error: 'No data for requested date', data: null }
+            parameters: { 
+              metric_type: 'all', 
+              time_period: 'invalid_date_request' 
+            },
+            result: { 
+              error: dateValidation.message,
+              reason: dateValidation.reason,
+              data: null 
+            }
           }],
           metadata: {
-            error: 'No historical data for date'
+            error: dateValidation.reason,
+            dateValidation: 'failed'
           }
         };
       }
@@ -453,9 +530,25 @@ Would you like to see your current metrics instead?`,
       // Update context manager state
       const queryType = this.detectConversationType(processedMessage);
       
-      // NEW: Detect multiple data requests - use processedMessage instead of undefined 'message'
-      const multipleRequests = detectMultipleDataRequests(processedMessage);
-      
+     // NEW: Detect multiple data requests - use processedMessage instead of undefined 'message'
+      const multipleRequestsResult = detectMultipleDataRequests(processedMessage);
+
+      // Check if there was a date error
+      if (multipleRequestsResult.dateError) {
+        const userName = context.userContext?.userProfile?.name || 'User';
+        return {
+          content: `${userName}, ${multipleRequestsResult.dateError.message}\n\nWould you like to see your current data instead?`,
+          functionCalls: [{
+            name: 'date_validation',
+            parameters: { status: 'failed' },
+            result: multipleRequestsResult.dateError
+          }]
+        };
+      }
+
+      // Extract the actual requests array
+      const multipleRequests = multipleRequestsResult.requests;
+
       // If multiple data types are requested, handle them all
       if (multipleRequests.length > 1) {
         console.log(`[AI Chat] Multiple requests detected: ${multipleRequests.map(r => r.type).join(', ')}`);
@@ -724,6 +817,40 @@ Would you like to see your current metrics instead?`,
   async getMockResponse(message, context, userId, referenceInfo = null) {
     const lowerMessage = message.toLowerCase();
     
+     // Validate date context first
+    const dateValidation = validateAndExtractDateContext(message);
+    
+    if (!dateValidation.valid) {
+      const userName = context.userContext?.userProfile?.name || 'User';
+      let responseContent = `${userName}, ${dateValidation.message}\n\n`;
+      
+      if (dateValidation.reason === 'future_date') {
+        responseContent += `I can help you with:\n`;
+        responseContent += `• Your current health metrics\n`;
+        responseContent += `• Today's meal plan\n`;
+        responseContent += `• Recent progress tracking\n\n`;
+        responseContent += `What would you like to know about your current health status?`;
+      } else {
+        responseContent += `Here's what I can show you:\n`;
+        responseContent += `• Current BMI and wellness score\n`;
+        responseContent += `• Today's nutrition plan\n`;
+        responseContent += `• Recent health trends (last 30 days)\n\n`;
+        responseContent += `Would you like to see any of these?`;
+      }
+      
+      return {
+        content: responseContent,
+        functionCalls: [{
+          name: 'data_validation',
+          parameters: { request_type: 'invalid_date' },
+          result: { 
+            error: dateValidation.message,
+            reason: dateValidation.reason 
+          }
+        }]
+      };
+    }
+
     // If this is a follow-up, handle it specially
     if (referenceInfo && referenceInfo.hasReference) {
       return this.handleFollowUp(message, context, userId, referenceInfo);
