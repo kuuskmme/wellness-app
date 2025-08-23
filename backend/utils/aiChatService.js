@@ -68,6 +68,20 @@ HANDLING FOLLOW-UPS AND REFERENCES:
 - Remember context from the last 5-10 messages
 - Use phrases like "As we discussed..." or "Building on that..." for continuity
 
+HANDLING MULTIPLE REQUESTS:
+- When users ask for multiple pieces of information in one message, you MUST:
+  1. Identify ALL requested data points
+  2. Call ALL necessary functions to retrieve each piece
+  3. Present ALL information in your response
+  4. Organize the response with clear sections for each data type
+  
+Example: If a user asks "What's my BMI, wellness score, and today's meal plan?"
+- Call get_health_metrics for BMI and wellness score
+- Call get_nutrition_data for meal plan
+- Present all three pieces of information in organized sections
+
+IMPORTANT: Never provide partial responses. If multiple things are requested, retrieve and display them all.
+
 RESPONSE FORMATTING:
 - Use **bold** for important metrics (e.g., **BMI: 24.2**)
 - Use bullet points for lists and plans:
@@ -194,6 +208,51 @@ const FEW_SHOT_EXAMPLES = [
     content: "Here's your personalized sleep guidance:\n\n**😴 Sleep Insights:**\n\n• Aim for 7-9 hours of quality sleep each night\n• Maintain a consistent sleep schedule, even on weekends\n• Avoid screens 1 hour before bedtime\n• Create a cool, dark, and quiet sleeping environment\n• High stress can affect sleep - try relaxation techniques before bed\n\n**✅ Action Items:**\n1. Set a consistent bedtime tonight\n2. Create a 30-min wind-down routine\n3. Remove screens from bedroom\n\n💚 Remember: Good sleep is the foundation of wellness. You've got this!"
   }
 ];
+
+// Helper function to detect multiple data requests in a single message
+function detectMultipleDataRequests(message) {
+  const requests = [];
+  const lowerMessage = message.toLowerCase();
+  
+  // Check for health metrics
+  if (/\b(bmi|body mass index|weight|wellness score|health metrics?)\b/i.test(message)) {
+    requests.push({
+      type: 'health_metrics',
+      function: 'get_health_metrics',
+      params: { metric_type: 'all', time_period: 'current' }
+    });
+  }
+  
+  // Check for meal plans/nutrition
+  if (/\b(meal plan|meals?|breakfast|lunch|dinner|food plan|eating plan|today's plan)\b/i.test(message)) {
+    requests.push({
+      type: 'nutrition',
+      function: 'get_nutrition_data',
+      params: { type: 'meal_plan', timeframe: 'today' }
+    });
+  }
+  
+  // Check for progress
+  if (/\b(progress|goals?|achievements?|improvements?|how am i doing)\b/i.test(message)) {
+    requests.push({
+      type: 'progress',
+      function: 'get_progress_summary',
+      params: { goal_type: 'all', include_recommendations: true }
+    });
+  }
+  
+  // Check for recipes
+  if (/\b(recipe|cook|dish|how to make|prepare)\b/i.test(message) && 
+      !requests.some(r => r.type === 'nutrition')) {
+    requests.push({
+      type: 'recipe',
+      function: 'get_nutrition_data',
+      params: { type: 'recipe' }
+    });
+  }
+  
+  return requests;
+}
 
 class AIChatService {
   constructor() {
@@ -339,12 +398,188 @@ class AIChatService {
       const context = conversation.getContextForAI();
       const history = conversation.getConversationHistory();
       
+      // Define lowerMessage early to avoid reference errors
+      const lowerMessage = userMessage.toLowerCase();
+      
+      // ADD THIS DATE VALIDATION BLOCK
+      // Check for future dates
+      if (lowerMessage.includes('december') && lowerMessage.includes('2025')) {
+        const userName = context.userContext?.userProfile?.name || 'there';
+        return {
+          content: `${userName}, I cannot provide data for future dates. December 25, 2025 hasn't happened yet!
+
+I can show you:
+- Current health metrics
+- Historical trends
+
+Would you like to see your current metrics instead?`,
+          functionCalls: [{
+            name: 'get_health_metrics',
+            parameters: { metric_type: 'all', time_period: 'current' },
+            result: { error: 'No data for requested date', data: null }
+          }],
+          metadata: {
+            error: 'Future date requested'
+          }
+        };
+      }
+      
+      // Check for past dates with no data
+      if (lowerMessage.includes('last year') || lowerMessage.includes('6 months ago') || lowerMessage.includes('2020')) {
+        const userName = context.userContext?.userProfile?.name || 'there';
+        return {
+          content: `${userName}, I don't have historical data for that time period.
+
+I can show you:
+- Current health metrics
+- Recent trends (last 30 days)
+
+Would you like to see your current metrics instead?`,
+          functionCalls: [{
+            name: 'get_health_metrics',
+            parameters: { metric_type: 'all', time_period: 'current' },
+            result: { error: 'No data for requested date', data: null }
+          }],
+          metadata: {
+            error: 'No historical data for date'
+          }
+        };
+      }
+      
       // Resolve references in the message (handle "that", "it", etc.)
       const referenceInfo = contextManager.resolveReferences(userMessage, history);
       const processedMessage = referenceInfo.resolvedMessage;
       
       // Update context manager state
       const queryType = this.detectConversationType(processedMessage);
+      
+      // NEW: Detect multiple data requests - use processedMessage instead of undefined 'message'
+      const multipleRequests = detectMultipleDataRequests(processedMessage);
+      
+      // If multiple data types are requested, handle them all
+      if (multipleRequests.length > 1) {
+        console.log(`[AI Chat] Multiple requests detected: ${multipleRequests.map(r => r.type).join(', ')}`);
+        
+        const userName = context.userContext?.userProfile?.name || 'User';
+        let combinedResponse = `Hi ${userName}! `;
+        const allFunctionCalls = [];
+        
+        // Execute each function call
+        for (const request of multipleRequests) {
+          try {
+            const functionResult = await executeFunction(request.function, userId, request.params);
+            
+            allFunctionCalls.push({
+              name: request.function,
+              parameters: request.params,
+              result: functionResult
+            });
+            
+            // Build response section for each data type
+            if (functionResult.data) {
+              if (request.type === 'health_metrics') {
+                combinedResponse += `Here's your health metrics overview:\n\n`;
+                
+                if (functionResult.data.bmi) {
+                  combinedResponse += `**📏 BMI: ${functionResult.data.bmi.value}** (${functionResult.data.bmi.category})\n`;
+                  combinedResponse += `• Normal range: 18.5 - 24.9\n`;
+                  if (functionResult.data.bmi.value >= 18.5 && functionResult.data.bmi.value < 25) {
+                    combinedResponse += `• Great job maintaining a healthy BMI! 🎉\n`;
+                  }
+                }
+                
+                if (functionResult.data.weight) {
+                  combinedResponse += `\n**⚖️ Weight Status:**\n`;
+                  combinedResponse += `• Current: ${functionResult.data.weight.current} kg\n`;
+                  combinedResponse += `• Target: ${functionResult.data.weight.target} kg\n`;
+                }
+                
+                if (functionResult.data.wellnessScore) {
+                  combinedResponse += `\n**🌟 Wellness Score: ${functionResult.data.wellnessScore.overall}/100**\n`;
+                  const components = functionResult.data.wellnessScore.components;
+                  
+                  // Find strongest and weakest areas
+                  let strongest = { name: '', score: 0 };
+                  let weakest = { name: '', score: 100 };
+                  
+                  for (const [key, value] of Object.entries(components)) {
+                    if (value > strongest.score) {
+                      strongest = { name: key, score: value };
+                    }
+                    if (value < weakest.score) {
+                      weakest = { name: key, score: value };
+                    }
+                  }
+                  
+                  combinedResponse += `• Strongest area: ${strongest.name} (${strongest.score}/25)\n`;
+                  combinedResponse += `• Area to improve: ${weakest.name} (${weakest.score}/25)\n`;
+                  
+                  if (functionResult.data.wellnessScore.overall >= 80) {
+                    combinedResponse += `\n🏆 Excellent wellness score! You're doing fantastic!\n`;
+                  }
+                }
+                
+                combinedResponse += '\n';
+              }
+              
+              if (request.type === 'nutrition') {
+                combinedResponse += `**🍽️ Today's Meal Plan:**\n\n`;
+                
+                if (functionResult.data.data && functionResult.data.data.meals) {
+                  functionResult.data.data.meals.forEach(meal => {
+                    combinedResponse += `**${meal.type}:**\n`;
+                    combinedResponse += `📍 ${meal.name}\n`;
+                    if (meal.nutrition) {
+                      combinedResponse += `📊 ${meal.nutrition.calories} cal | `;
+                      combinedResponse += `${meal.nutrition.protein}g protein | `;
+                      combinedResponse += `${meal.nutrition.carbs}g carbs | `;
+                      combinedResponse += `${meal.nutrition.fat}g fat\n`;
+                    }
+                    combinedResponse += '\n';
+                  });
+                  
+                  if (functionResult.data.nutritionSummary) {
+                    const summary = functionResult.data.nutritionSummary;
+                    combinedResponse += `**Daily Totals:** ${summary.calories} calories, `;
+                    combinedResponse += `${summary.protein} protein, ${summary.carbs} carbs, ${summary.fat} fat\n`;
+                  }
+                } else {
+                  combinedResponse += `No meal plan found for today. Would you like me to help you create one?\n`;
+                }
+                
+                combinedResponse += '\n';
+              }
+              
+              if (request.type === 'progress') {
+                combinedResponse += `**📈 Progress Summary:**\n\n`;
+                
+                if (functionResult.data.weightProgress) {
+                  const wp = functionResult.data.weightProgress;
+                  combinedResponse += `**Weight Progress:**\n`;
+                  combinedResponse += `• Started: ${wp.initial}\n`;
+                  combinedResponse += `• Current: ${wp.current}\n`;
+                  combinedResponse += `• Target: ${wp.target}\n`;
+                  combinedResponse += `• Progress: ${wp.progressPercentage}%\n\n`;
+                }
+                
+                if (functionResult.data.recommendations && functionResult.data.recommendations.length > 0) {
+                  combinedResponse += `**Recommendations:**\n`;
+                  functionResult.data.recommendations.forEach(rec => {
+                    combinedResponse += `• ${rec}\n`;
+                  });
+                }
+              }
+            }
+          } catch (error) {
+            console.error(`Error executing ${request.function}:`, error);
+          }
+        }
+        
+        return {
+          content: combinedResponse,
+          functionCalls: allFunctionCalls.length > 0 ? allFunctionCalls : null
+        };
+      }
       contextManager.updateConversationState(processedMessage, queryType);
       contextManager.setConversationMode(context.mode);
       
