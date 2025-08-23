@@ -30,24 +30,43 @@ class SecurityValidator {
     ];
     
     // Patterns for data fishing attempts
-    this.dataFishingPatterns = [
-      /show me (all|other) users/i,
-      /access (all|other|another) (user|account|profile)/i,
-      /database/i,
-      /sql/i,
-      /select.*from/i,
-      /drop table/i,
-      /delete from/i,
-      /update.*set/i,
-      /(list|show|get) all (users|accounts|profiles|data)/i,
-      /admin (access|panel|dashboard)/i,
-      /root access/i,
-      /system files/i,
-      /private (data|information)/i,
-      /confidential/i,
-      /other people's/i,
-      /someone else's/i
-    ];
+this.dataFishingPatterns = [
+  // Comparison attempts
+  /for comparison/i,
+  /compare.*(?:with|to|against).*(?:other|another|different)\s+user/i,
+  /what\s+(?:do\s+)?other\s+(?:users?|people|members?)\s+(?:have|eat|get)/i,
+  /show\s+me\s+what\s+(?:other|another|different)\s+(?:users?|people)/i,
+  /(?:average|typical|normal)\s+user['']?s?\s+(?:meal|plan|diet|bmi|weight)/i,
+  
+  // Direct access attempts
+  /show me (all|other) users/i,
+  /access (all|other|another) (user|account|profile)/i,
+  /list all (users|accounts|profiles|data)/i,
+  /other people['']?s/i,
+  /someone else['']?s/i,
+  
+  // Role playing as another user
+  /pretend\s+(?:i['']?m|i\s+am|to\s+be)\s+(?:user|person|account)/i,
+  /act\s+as\s+(?:if\s+i['']?m|i['']?m)\s+user/i,
+  /i['']?m\s+user\s+(?:id\s+)?[\[\(]?[A-Z0-9_]+[\]\)]?/i,
+  /my\s+(?:user\s+)?id\s+is/i,
+  /switch\s+to\s+(?:user|account)/i,
+  
+  // Database/SQL attempts
+  /database/i,
+  /sql/i,
+  /select.*from/i,
+  /drop table/i,
+  /delete from/i,
+  /update.*set/i,
+  
+  // Admin access
+  /admin (access|panel|dashboard)/i,
+  /root access/i,
+  /system files/i,
+  /private (data|information)/i,
+  /confidential/i
+];
     
     // Sensitive operations that should be blocked
     this.sensitiveOperations = [
@@ -361,51 +380,91 @@ class SecurityValidator {
    * Get response for jailbreak attempts
    */
   getJailbreakResponse() {
-    return `I'm designed to be a helpful wellness assistant within my intended purpose. I can only help with health metrics, nutrition, exercise, and general wellness topics.
+  return `I cannot change my operational mode or bypass security measures.
 
-If you have questions about your health journey, I'm here to help! What would you like to know about?`;
-  }
+**What I am:** A wellness assistant with access to YOUR personal health data only.
+
+**What I cannot do:**
+• Enter "admin mode" or any other mode
+• Access other users' data
+• View system files or databases
+• Override security protocols
+
+**What I can do:**
+• Show YOUR health metrics (BMI, weight, wellness score)
+• Display YOUR meal plans
+• Track YOUR progress
+• Provide general wellness guidance
+
+How can I help with your personal wellness journey today?`;
+}
   
   /**
    * Get response for data fishing attempts
    */
   getDataFishingResponse() {
-    return `For privacy and security reasons, I can only access your personal wellness data. I cannot access other users' information or system data.
+  return `I cannot access other users' data. Each user's health information is private and protected.
 
-I'm here to help with YOUR wellness journey. Would you like to:
-• Check your health metrics?
-• Review your meal plan?
-• Get exercise recommendations?`;
-  }
+**Privacy & Security:**
+• I can ONLY access YOUR personal data
+• I cannot show what other users eat or their meal plans
+• I cannot display other users' BMI, weight, or health metrics
+• I cannot provide "comparisons" with real user data
+• I cannot pretend to be another user
+
+**What I CAN do for you:**
+• Show YOUR meal plan and nutrition
+• Display YOUR health metrics (BMI, weight, wellness score)
+• Provide general healthy ranges (e.g., normal BMI: 18.5-24.9)
+• Share evidence-based nutrition guidelines
+
+Would you like to see your own meal plan or health data?`;
+}
   
   /**
    * Get response for sensitive operations
    */
   getSensitiveOperationResponse() {
-    return `I cannot perform that operation. For account management or sensitive changes, please use the account settings in your profile.
+  return `I cannot perform system operations or access sensitive data.
 
-I'm here to help with:
-• Health and fitness tracking
-• Nutrition planning
-• Wellness guidance
+**Security boundaries:**
+• I cannot delete accounts or data
+• I cannot grant admin privileges
+• I cannot reveal passwords or API keys
+• I cannot modify system settings
 
-What wellness topic can I assist you with today?`;
-  }
+**For account management:**
+Please use the account settings page in your profile.
+
+**I'm here to help with:**
+• Your health metrics and tracking
+• Your nutrition and meal planning
+• Your fitness goals
+• General wellness advice
+
+What aspect of your wellness would you like to explore?`;
+}
   
   /**
    * Get response for suspicious patterns
    */
-  getSuspiciousPatternResponse() {
-    return `I've noticed unusual activity in our conversation. Let's focus on how I can help with your wellness goals.
+ getSuspiciousPatternResponse() {
+  return `I've detected multiple unusual requests. For security, I need to clarify my capabilities.
 
-Please ask me about:
-• Your health metrics
-• Meal planning
-• Exercise routines
-• Wellness tips
+**I am a wellness assistant that:**
+• ONLY accesses your personal health data
+• Cannot be "jailbroken" or put into special modes
+• Cannot access other users' information
+• Follows strict privacy and security protocols
 
-How can I assist with your health journey today?`;
-  }
+**Please use me as intended for:**
+• Tracking your health metrics
+• Planning your meals
+• Monitoring your progress
+• Getting wellness advice
+
+Let's focus on your wellness goals. What would you like to know about your health data?`;
+}
   
   /**
    * Validate function call parameters
