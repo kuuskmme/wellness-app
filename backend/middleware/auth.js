@@ -2,6 +2,7 @@
 const jwt = require('jsonwebtoken');
 const User = require('../models/User');
 const rateLimit = require('express-rate-limit');
+const { authenticateToken } = require('../middleware/auth');
 
 // Verify JWT token
 const verifyToken = (req, res, next) => {

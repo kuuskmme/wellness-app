@@ -91,11 +91,11 @@ const ChatAssistantPage = () => {
           setMessages([{
             role: 'assistant',
             content: `Hello! I'm your wellness assistant. I can help you with:
-• Health metrics and progress tracking
-• Meal planning and nutrition advice
-• Recipe suggestions
-• Fitness goals and motivation
-• General wellness questions
+- Health metrics and progress tracking
+- Meal planning and nutrition advice
+- Recipe suggestions
+- Fitness goals and motivation
+- General wellness questions
 
 How can I assist you today?`,
             timestamp: new Date()
@@ -193,18 +193,18 @@ How can I assist you today?`,
   const toggleMode = async () => {
     const newMode = mode === 'concise' ? 'detailed' : 'concise';
     setMode(newMode);
+    console.log(`Mode changed to ${newMode}`);
 
     if (sessionId) {
       try {
         const token = getToken();
-        await fetch('http://localhost:5000/api/chat/mode', {
+        await fetch(`http://localhost:5000/api/chat/mode/${sessionId}`, {
           method: 'PUT',
           headers: {
             'Authorization': `Bearer ${token}`,
             'Content-Type': 'application/json'
           },
           body: JSON.stringify({
-            sessionId: sessionId,
             mode: newMode
           })
         });
