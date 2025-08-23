@@ -214,14 +214,25 @@ function detectMultipleDataRequests(message) {
   const requests = [];
   const lowerMessage = message.toLowerCase();
   
-  // First validate the date context
+  // First check for security threats
+  const securityCheck = detectSecurityThreats(message);
+  if (securityCheck.detected) {
+    return {
+      requests: [],
+      dateError: null,
+      securityError: securityCheck
+    };
+  }
+  
+  // Then validate the date context
   const dateValidation = validateAndExtractDateContext(message);
   
   // If date is invalid, don't process requests normally
   if (!dateValidation.valid) {
     return {
       requests: [],
-      dateError: dateValidation
+      dateError: dateValidation,
+      securityError: null
     };
   }
   
@@ -264,8 +275,103 @@ function detectMultipleDataRequests(message) {
   
   return {
     requests: requests,
-    dateError: null
+    dateError: null,
+    securityError: null
   };
+}
+
+// Helper function to detect potential security threats and jailbreak attempts
+function detectSecurityThreats(message) {
+  const lowerMessage = message.toLowerCase();
+  
+  // Pattern detection for various jailbreak attempts
+  const threatPatterns = [
+    {
+      pattern: /\b(pretend|act|imagine|suppose|assume)\s+(i'm|i am|you're|you are|we're|we are)\s+(user|admin|another|different)/i,
+      type: 'impersonation',
+      message: 'I can only access data for the authenticated user. I cannot pretend to be or access data for other users.'
+    },
+    {
+      pattern: /\b(user\s*id|userid|user_id|account\s*id)\s*[:=]?\s*[\w-]+/i,
+      type: 'user_id_injection',
+      message: 'I can only show your personal health data. I cannot access other users\' information.'
+    },
+    {
+      pattern: /\b(admin|administrator|sudo|root|superuser|elevated|debug)\s*(mode|access|privileges?|permissions?)/i,
+      type: 'privilege_escalation',
+      message: 'I don\'t have admin capabilities. I can only help with your personal wellness data.'
+    },
+    {
+      pattern: /\b(show|display|list|get|fetch)\s+(me\s+)?(all|other|different|another)\s+users?\b/i,
+      type: 'data_fishing',
+      message: 'I can only access your personal data. I cannot show information about other users.'
+    },
+    {
+      pattern: /\b(other|another|different|someone else's?|neighbor's?|friend's?)\s+(user's?|person's?|patient's?|account's?)\s*(data|health|metrics|meal|bmi)/i,
+      type: 'cross_user_access',
+      message: 'For privacy and security, I can only show your personal health information.'
+    },
+    {
+      pattern: /\b(example|sample|demo)\s+.*\s+(using|with|from)\s+(another|other|different|real)\s+user/i,
+      type: 'example_with_real_data',
+      message: 'I can explain concepts using hypothetical examples only. I cannot use real data from other users.'
+    },
+    {
+      pattern: /\bcompare\s+(my|me|mine)\s+.*\s+(to|with|against)\s+(other|all|different)\s+users?\b/i,
+      type: 'comparison_request',
+      message: 'I cannot compare your data with other users. I can only show your personal metrics and general health guidelines.'
+    },
+    {
+      pattern: /\b(everyone|everybody|all\s+users?|all\s+people|global|system\s*wide)/i,
+      type: 'global_access',
+      message: 'I can only access your individual health data, not system-wide or other users\' information.'
+    },
+    {
+      pattern: /\b(bypass|override|ignore|disable|turn\s*off)\s+(security|privacy|authentication|restrictions?|limits?)/i,
+      type: 'security_bypass',
+      message: 'Security and privacy protections cannot be disabled. I\'m designed to protect all users\' data.'
+    },
+    {
+      pattern: /\b(sql|database|query|select\s+\*|drop\s+table|insert\s+into|update\s+set)/i,
+      type: 'sql_injection',
+      message: 'I don\'t process database queries. I can help with your wellness journey using natural conversation.'
+    }
+  ];
+  
+  // Check each pattern
+  for (const threat of threatPatterns) {
+    if (threat.pattern.test(lowerMessage)) {
+      return {
+        detected: true,
+        type: threat.type,
+        message: threat.message
+      };
+    }
+  }
+  
+  // Additional context-based checks
+  if (lowerMessage.includes('bmi') && 
+      (lowerMessage.includes('over 30') || lowerMessage.includes('under 18') || 
+       lowerMessage.includes('above') || lowerMessage.includes('below')) &&
+      (lowerMessage.includes('users') || lowerMessage.includes('people') || 
+       lowerMessage.includes('everyone'))) {
+    return {
+      detected: true,
+      type: 'statistical_fishing',
+      message: 'I cannot provide statistics about other users. I can only discuss your personal health metrics.'
+    };
+  }
+  
+  if ((lowerMessage.includes('comparison') || lowerMessage.includes('compare')) &&
+      (lowerMessage.includes('other') || lowerMessage.includes('average'))) {
+    return {
+      detected: true,
+      type: 'comparison_request',
+      message: 'I can compare your metrics to general health guidelines, but not to other users\' data.'
+    };
+  }
+  
+  return { detected: false };
 }
 
 // Helper function to validate date requests and extract time context
@@ -273,6 +379,8 @@ function validateAndExtractDateContext(message) {
   const lowerMessage = message.toLowerCase();
   const now = new Date();
   const currentYear = now.getFullYear();
+
+  
   
   // Check for future dates
   if (/\b(next\s+(year|month|week)|tomorrow|future)\b/i.test(lowerMessage)) {
@@ -532,6 +640,29 @@ class AIChatService {
       
      // NEW: Detect multiple data requests - use processedMessage instead of undefined 'message'
       const multipleRequestsResult = detectMultipleDataRequests(processedMessage);
+
+      // Check for security threats first
+if (multipleRequestsResult.securityError) {
+  const userName = context.userContext?.userProfile?.name || 'User';
+  return {
+    content: `${userName}, ${multipleRequestsResult.securityError.message}\n\nHow can I help with your personal wellness journey today?`,
+    functionCalls: [{
+      name: 'security_check',
+      parameters: { 
+        threat_type: multipleRequestsResult.securityError.type,
+        action: 'blocked' 
+      },
+      result: { 
+        error: 'Security threat detected',
+        message: multipleRequestsResult.securityError.message 
+      }
+    }],
+    metadata: {
+      security: 'threat_detected',
+      type: multipleRequestsResult.securityError.type
+    }
+  };
+}
 
       // Check if there was a date error
       if (multipleRequestsResult.dateError) {
@@ -816,6 +947,20 @@ class AIChatService {
 
   async getMockResponse(message, context, userId, referenceInfo = null) {
     const lowerMessage = message.toLowerCase();
+
+    // Check for security threats first
+    const securityCheck = detectSecurityThreats(message);
+    if (securityCheck.detected) {
+      const userName = context.userContext?.userProfile?.name || 'User';
+      return {
+        content: `${userName}, ${securityCheck.message}\n\nHow can I help with your personal wellness journey today?`,
+        functionCalls: [{
+          name: 'security_check',
+          parameters: { threat_type: securityCheck.type },
+          result: { blocked: true, reason: securityCheck.message }
+        }]
+      };
+    }
     
      // Validate date context first
     const dateValidation = validateAndExtractDateContext(message);
