@@ -7,6 +7,7 @@ const { verifyToken } = require('../middleware/auth');
 const aiChatService = require('../utils/aiChatService');
 const securityValidator = require('../utils/securityValidator');
 const requestTracer = require('../utils/requestTracer');
+const { authenticateToken } = require('../middleware/auth');
 
 // Apply rate limiting (if apiLimiter is available)
 // router.use(apiLimiter);
@@ -278,6 +279,44 @@ router.put('/mode', async (req, res) => {
       message: 'Failed to update conversation mode',
       error: error.message 
     });
+  }
+});
+
+// Update response mode for a conversation
+router.put('/mode/:conversationId', verifyToken, async (req, res) => {
+  try {
+    const { conversationId } = req.params;
+    const { mode } = req.body;
+    
+    // Validate mode
+    if (!['concise', 'detailed'].includes(mode)) {
+      return res.status(400).json({
+        error: 'Invalid mode. Must be "concise" or "detailed"'
+      });
+    }
+    
+    // Find conversation - fix the userId reference
+    const conversation = await Conversation.findOne({
+      _id: conversationId,
+      userId: req.user.userId || req.user.id || req.userId
+    });
+    
+    if (!conversation) {
+      return res.status(404).json({ error: 'Conversation not found' });
+    }
+    
+    // Update mode
+    conversation.mode = mode;
+    await conversation.save();
+    
+    res.json({
+      success: true,
+      mode: mode,
+      message: `Response mode set to ${mode}`
+    });
+  } catch (error) {
+    console.error('Mode update error:', error);
+    res.status(500).json({ error: 'Failed to update mode' });
   }
 });
 
